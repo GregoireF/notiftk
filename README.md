@@ -4,6 +4,19 @@ API REST + SSE pour détecter en temps réel si un utilisateur TikTok est en liv
 
 Conçue pour alimenter des **bots Discord**, des **widgets de site web** (bulle verte/rouge), ou tout système qui doit réagir quand un streamer passe en ligne — sans UI, sans polling côté client, sans dépendance à l'API officielle TikTok (qui n'existe pas pour le statut live).
 
+**Documentation complète** → [`docs/wiki/`](docs/wiki/index.md)
+
+| | |
+|---|---|
+| [Démarrage rapide](docs/wiki/getting-started.md) | Installation et premier appel en 2 minutes |
+| [Référence API](docs/wiki/api-reference.md) | Tous les endpoints, codes HTTP, exemples |
+| [Authentification](docs/wiki/authentication.md) | Clés env + self-service, rate limiting |
+| [Architecture](docs/wiki/architecture.md) | Flux de détection, cache, SSE, scalabilité |
+| [Déploiement Fly.io](docs/wiki/deployment/flyio.md) | Guide complet avec CI/CD |
+| [Autres hébergeurs](docs/wiki/deployment/alternatives.md) | Koyeb, Oracle Cloud, Render, Docker |
+| [Sécurité](docs/wiki/security.md) | SSRF, HMAC, bonnes pratiques |
+| [Intégrations](docs/wiki/integrations/discord-slash.md) | Discord, webhooks, widget web, REST clients |
+
 ---
 
 ## Sommaire
@@ -669,28 +682,24 @@ Koyeb offre 1 service toujours actif (0,1 vCPU, 512 MB) sans carte bancaire, mai
 # Variables d'env : API_KEYS, ADMIN_SECRET, REQUIRE_API_KEY
 ```
 
-### Option 3 — Railway
+### Option 3 — Oracle Cloud Always Free
 
-Railway donne 5 $ de crédits/mois (hobby plan), suffisant pour ~500h de runtime. Pas de persistance disque gratuite.
+2 VMs ARM 4 cœurs / 24 GB RAM au total avec stockage persistant, sans carte bancaire. Setup plus complexe mais infrastructure dédiée.
 
-```bash
-railway login
-railway init
-railway up
-```
+Voir le guide complet → [docs/wiki/deployment/alternatives.md](docs/wiki/deployment/alternatives.md)
 
 ### Comparatif
 
-| | Fly.io | Koyeb | Railway |
-|---|---|---|---|
-| Toujours actif | ✅ | ✅ | ✅ |
-| HTTPS auto | ✅ | ✅ | ✅ |
-| Volume persistant | ✅ 3 GB | ❌ | ❌ |
-| Webhooks persistants | ✅ | ❌ | ❌ |
-| Clés self-service persistantes | ✅ | ❌ | ❌ |
-| SSE / connexions longues | ✅ | ✅ | ✅ |
-| Carte bancaire requise | Non | Non | Non |
-| Coût | 0 € | 0 € | ~0 € |
+| | Fly.io | Koyeb | Oracle Cloud | Render |
+|---|---|---|---|---|
+| Toujours actif | ✅ | ✅ | ✅ | ❌ spin-down |
+| HTTPS auto | ✅ | ✅ | via Caddy | ✅ |
+| Volume persistant | ✅ 3 GB | ❌ | ✅ illimité | ❌ |
+| Webhooks persistants | ✅ | ❌ | ✅ | ❌ |
+| Clés self-service persistantes | ✅ | ❌ | ✅ | ❌ |
+| SSE / connexions longues | ✅ | ✅ | ✅ | ❌ |
+| Carte bancaire requise | Non | Non | Non | Non |
+| Coût | 0 € | 0 € | 0 € | 0 € |
 
 ---
 

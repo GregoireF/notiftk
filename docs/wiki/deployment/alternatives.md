@@ -1,6 +1,6 @@
 # Alternatives à Fly.io
 
-> Ces plateformes ne supportent pas le stockage persistant en tier gratuit — les webhooks et clés self-service sont perdus au redémarrage. Pour un usage avec persistance, utilisez [Fly.io](flyio.md).
+> La plupart de ces plateformes ne proposent pas de stockage persistant en tier gratuit — les webhooks et clés self-service sont perdus au redémarrage. Pour un usage avec persistance, utilisez [Fly.io](flyio.md).
 
 ---
 
@@ -29,44 +29,76 @@ REQUIRE_API_KEY=true
 
 ---
 
-## Railway
+## Oracle Cloud Always Free
 
-**Avantages** : 5 $/mois de crédits (hobby plan, ~500h runtime).  
-**Inconvénient** : pas de disque persistant gratuit, nécessite une CB.
+**Avantages** : 2 VMs ARM 4 cœurs / 24 GB RAM au total, **stockage bloc persistant**, sans carte bancaire (compte Oracle requis).  
+**Inconvénient** : inscription parfois refusée selon la région ; setup plus complexe qu'une PaaS.
 
 ```bash
-railway login
-railway init
-railway up
+# Sur la VM Oracle (Ubuntu 22.04 ARM)
+sudo apt update && sudo apt install -y python3-pip python3-venv git
+
+git clone https://github.com/votre-user/notiftk && cd notiftk
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Créer un service systemd
+cat > /etc/systemd/system/notiftk.service << 'EOF'
+[Unit]
+Description=NotiTFK API
+After=network.target
+
+[Service]
+WorkingDirectory=/home/ubuntu/notiftk
+ExecStart=/home/ubuntu/notiftk/.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 8080
+Restart=always
+Environment=WEBHOOKS_DB=/data/notiftk/webhooks.db
+Environment=API_KEYS=sk_live_abc123
+Environment=ADMIN_SECRET=votre-secret
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl enable --now notiftk
 ```
 
-Variables via l'UI Railway ou `.railway.toml`.
+HTTPS via [Caddy](https://caddyserver.com) (reverse-proxy automatique) :
+```
+# /etc/caddy/Caddyfile
+notiftk.example.com {
+    reverse_proxy localhost:8080
+}
+```
+
+**Persistance** : monter le volume bloc Oracle sur `/data` — les webhooks survivent aux redémarrages.
 
 ---
 
 ## Render
 
-**Avantages** : Free tier avec 750h/mois, HTTPS auto.  
-**Inconvénient** : spin-down après 15min d'inactivité (Free), problématique pour SSE.
+**Avantages** : Free tier avec 750h/mois, HTTPS auto, sans carte bancaire.  
+**Inconvénient** : spin-down après 15min d'inactivité — coupe toutes les connexions SSE actives.
 
 ```
 Build command : pip install -r requirements.txt
 Start command : uvicorn api.main:app --host 0.0.0.0 --port 10000
 ```
 
-> Le spin-down coupe toutes les connexions SSE — non recommandé pour ce cas d'usage.
+> Le spin-down est rédhibitoire pour les connexions SSE longues. Render convient uniquement pour l'endpoint REST `/api/status/{username}`.
 
 ---
 
 ## Docker (auto-hébergé)
 
-Pour un déploiement sur VPS (Hetzner, OVH, etc.) :
+Pour un déploiement sur VPS ou machine locale. Le `Dockerfile` est inclus dans le dépôt.
 
 ```bash
 # Build
 docker build -t notiftk .
 
-# Run avec volume persistant
+# Run avec volume persistant (port hôte:8000 → container:8080)
 docker run -d \
   -p 8000:8080 \
   -v notiftk_data:/data \
@@ -80,7 +112,6 @@ docker run -d \
 Avec docker-compose :
 
 ```yaml
-version: '3.8'
 services:
   notiftk:
     build: .
@@ -98,16 +129,41 @@ volumes:
   notiftk_data:
 ```
 
+Démarrer :
+```bash
+# Copier les variables
+cp .env.example .env  # éditer avec vos valeurs
+docker compose up -d
+```
+
+---
+
+## Railway
+
+**Avantages** : 5 $/mois de crédits (hobby plan, ~500h runtime), HTTPS auto.  
+**Inconvénient** : nécessite une carte bancaire ; pas de persistance disque gratuite.
+
+```bash
+railway login
+railway init
+railway up
+```
+
+Variables via l'UI Railway ou `.railway.toml`.
+
 ---
 
 ## Comparatif
 
-| | Fly.io | Koyeb | Railway | Render | Docker VPS |
+| | Fly.io | Koyeb | Oracle Cloud | Render | Docker VPS |
 |---|---|---|---|---|---|
 | Toujours actif | ✅ | ✅ | ✅ | ❌ spin-down | ✅ |
-| HTTPS auto | ✅ | ✅ | ✅ | ✅ | via Caddy/nginx |
-| Volume persistant | ✅ 3 GB | ❌ | ❌ | ❌ | ✅ illimité |
-| Webhooks persistants | ✅ | ❌ | ❌ | ❌ | ✅ |
+| HTTPS auto | ✅ | ✅ | via Caddy | ✅ | via Caddy |
+| Volume persistant | ✅ 3 GB | ❌ | ✅ illimité | ❌ | ✅ illimité |
+| Webhooks persistants | ✅ | ❌ | ✅ | ❌ | ✅ |
 | SSE longue durée | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Carte bancaire | Non | Non | Oui | Non | Oui (VPS) |
-| Coût mensuel | 0 € | 0 € | ~0 € | 0 € | ~4-6 €/mois |
+| Carte bancaire | Non | Non | Non | Non | Oui (VPS) |
+| Coût mensuel | 0 € | 0 € | 0 € | 0 € | ~4-6 €/mois |
+| Complexité setup | Faible | Faible | Élevée | Faible | Moyenne |
+
+**Recommandation** : Fly.io pour un déploiement rapide avec persistance. Oracle Cloud si vous voulez une VM dédiée gratuite et êtes à l'aise avec Linux.

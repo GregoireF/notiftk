@@ -28,7 +28,7 @@
 |---|---|
 | [Fly.io (recommandé)](deployment/flyio.md) | Déploiement gratuit avec persistance SQLite |
 | [Local / développement](deployment/local.md) | Dev avec hot-reload, tests, pre-commit hooks |
-| [Autres plateformes](deployment/alternatives.md) | Koyeb, Railway — sans persistance |
+| [Autres plateformes](deployment/alternatives.md) | Koyeb, Oracle Cloud, Render, Docker — options gratuites |
 
 ### Référence technique
 | Guide | Description |
