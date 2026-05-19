@@ -676,7 +676,7 @@ Les machines (compute) sont créées par `fly deploy` en CI — séparation infr
 # Bootstrap (une seule fois, après création du workspace HCP Terraform "notiftk-flyio")
 cd infra/flyio
 tofu init
-tofu import fly_app.this notiftk
+tofu import fly_app.this notitk
 tofu import fly_volume.data vol_vz88wex7359onlxv
 tofu plan   # vérifier que rien ne sera détruit
 tofu apply

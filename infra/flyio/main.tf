@@ -1,15 +1,15 @@
 # ── App ──────────────────────────────────────────────────────────────────────
 
 resource "fly_app" "this" {
-  name = "notiftk"
+  name = "notitk"
   org  = var.fly_org
 }
 
 # Import existing app created via CLI:
-#   tofu import fly_app.this notiftk
+#   tofu import fly_app.this notitk
 import {
   to = fly_app.this
-  id = "notiftk"
+  id = "notitk"
 }
 
 
