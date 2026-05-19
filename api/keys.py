@@ -77,9 +77,7 @@ def generate_key(ip: str, label: str | None = None) -> tuple[str, str]:
         raise ValueError(f"Limite atteinte : max {MAX_KEYS_PER_IP} clés par IP toutes les 24 h.")
 
     with _db() as conn:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM api_keys WHERE is_active = 1"
-        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM api_keys WHERE is_active = 1").fetchone()[0]
     if total >= MAX_KEYS:
         raise ValueError("Capacité maximale atteinte. Contactez l'administrateur.")
 
@@ -101,15 +99,10 @@ def list_keys() -> list[dict]:
         rows = conn.execute(
             "SELECT id, label, created_at, is_active FROM api_keys ORDER BY created_at DESC"
         ).fetchall()
-    return [
-        {"id": r[0], "label": r[1], "created_at": r[2], "is_active": bool(r[3])}
-        for r in rows
-    ]
+    return [{"id": r[0], "label": r[1], "created_at": r[2], "is_active": bool(r[3])} for r in rows]
 
 
 def revoke_key(key_id: str) -> bool:
     with _db() as conn:
-        conn.execute(
-            "UPDATE api_keys SET is_active = 0 WHERE id = ?", [key_id]
-        )
+        conn.execute("UPDATE api_keys SET is_active = 0 WHERE id = ?", [key_id])
         return conn.total_changes > 0

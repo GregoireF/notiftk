@@ -98,6 +98,7 @@ async def api_key_dependency(
 
     if AUTH_ENABLED:
         from .keys import is_db_key_valid  # local import avoids circular dependency at module load
+
         if not key or (key not in VALID_KEYS and not is_db_key_valid(key)):
             raise HTTPException(
                 status_code=401,

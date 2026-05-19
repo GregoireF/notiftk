@@ -296,9 +296,7 @@ async def live_stream_multi(
 def _client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for")
     return (
-        xff.split(",")[0].strip()
-        if xff
-        else (request.client.host if request.client else "unknown")
+        xff.split(",")[0].strip() if xff else (request.client.host if request.client else "unknown")
     )
 
 
