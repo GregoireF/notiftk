@@ -25,10 +25,10 @@ resource "fly_volume" "data" {
 }
 
 # Import existing volume created via CLI:
-#   tofu import fly_volume.data vol_vz88wex7359onlxv
+#   tofu import fly_volume.data notitk,vol_vz88wex7359onlxv
 import {
   to = fly_volume.data
-  id = "vol_vz88wex7359onlxv"
+  id = "notitk,vol_vz88wex7359onlxv"
 }
 
 
