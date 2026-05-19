@@ -1,0 +1,7 @@
+target-version = "py313"
+line-length = 100
+
+[lint]
+select = ["E", "F", "W"]
+# E501: line-length — already enforced by line-length above
+ignore = ["E501"]

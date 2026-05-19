@@ -1,0 +1,35 @@
+name: commitlint
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: commitlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commitlint:
+    name: Commitlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # Dependabot commit messages include full SHA hashes (165+ chars) and cannot
+      # be shortened. Skip the lint step for bot PRs — the job still succeeds so
+      # the required "Commitlint" check is satisfied.
+      - uses: wagoid/commitlint-github-action@6cf16efdf4da5277c791d335142c03a0bdf1766e # v6.2.1
+        if: github.actor != 'dependabot[bot]'
+        with:
+          configFile: .commitlintrc.yml

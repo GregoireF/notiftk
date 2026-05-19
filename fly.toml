@@ -1,0 +1,55 @@
+# Fly.io deployment configuration for NotiTK
+# Docs: https://fly.io/docs/reference/configuration/
+#
+# First deploy:
+#   fly volumes create notitk_data --size 1 --region cdg   # persistent storage for webhooks
+#   fly secrets set API_KEYS=sk_live_abc123,sk_live_xyz789
+#   fly deploy
+#
+# Useful commands:
+#   fly logs          — tail live logs
+#   fly ssh console   — open a shell on the machine
+#   fly status        — machine health + recent deployments
+
+app            = "notitk"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  # Tell the app where to store the webhook SQLite database.
+  # The /data path is backed by the persistent volume declared below.
+  WEBHOOKS_DB = "/data/webhooks.db"
+
+[http_service]
+  internal_port = 8080
+  force_https   = true
+
+  # SSE connections are long-lived — never auto-stop mid-stream.
+  auto_stop_machines  = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 500
+    soft_limit = 400
+
+[[vm]]
+  memory   = "256mb"
+  cpu_kind = "shared"
+  cpus     = 1
+
+# Persistent volume — keeps webhooks.db across deploys and restarts.
+# Create once: fly volumes create notitk_data --size 1 --region cdg
+[[mounts]]
+  source      = "notitk_data"
+  destination = "/data"
+
+# Health check — Fly routes traffic only after this returns 200.
+[[http_service.checks]]
+  grace_period = "10s"
+  interval     = "30s"
+  method       = "GET"
+  path         = "/health"
+  timeout      = "5s"

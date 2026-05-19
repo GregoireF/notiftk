@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NotiTK — TikTok Live Status</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f0f0f;
+      color: #f1f1f1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      gap: 28px;
+      padding: 24px;
+    }
+
+    h1 { font-size: 2.2rem; letter-spacing: -0.5px; }
+    h1 span { color: #ff0050; }
+    .subtitle { color: #6b7280; font-size: 0.9rem; text-align: center; }
+
+    /* ── Search form ── */
+    form {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      max-width: 440px;
+    }
+    input {
+      flex: 1;
+      padding: 12px 16px;
+      border-radius: 8px;
+      border: 1px solid #2a2a2a;
+      background: #1a1a1a;
+      color: #f1f1f1;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: #ff0050; }
+    input::placeholder { color: #4b5563; }
+    button {
+      padding: 12px 20px;
+      background: #ff0050;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Result card ── */
+    #card {
+      width: 100%;
+      max-width: 440px;
+      background: #161616;
+      border: 1px solid #222;
+      border-radius: 14px;
+      padding: 20px 24px;
+      display: none;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Status row */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+
+    /* Pulsing live dot */
+    .dot {
+      position: relative;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.live {
+      background: #22c55e;
+      box-shadow: 0 0 0 0 rgba(34,197,94,0.6);
+      animation: pulse 1.8s infinite;
+    }
+    .dot.offline { background: #374151; }
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0   rgba(34,197,94,0.6); }
+      70%  { box-shadow: 0 0 0 9px rgba(34,197,94,0); }
+      100% { box-shadow: 0 0 0 0   rgba(34,197,94,0); }
+    }
+
+    /* Live details */
+    .details {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .detail-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+      color: #9ca3af;
+    }
+    .detail-row strong { color: #d1d5db; }
+    .tag {
+      display: inline-block;
+      background: #1f2937;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      color: #6b7280;
+    }
+
+    /* Monitoring badge */
+    .monitor-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: #4b5563;
+      border-top: 1px solid #1f2937;
+      padding-top: 10px;
+    }
+    .monitor-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #22c55e;
+      animation: pulse 1.8s infinite;
+    }
+    .monitor-dot.connecting { background: #f59e0b; }
+    .monitor-dot.error { background: #ef4444; animation: none; }
+
+    /* Error state */
+    .error-msg { color: #f87171; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Noti<span>TK</span></h1>
+  <p class="subtitle">Surveillance en temps réel des lives TikTok</p>
+
+  <form id="form">
+    <input
+      id="username"
+      type="text"
+      placeholder="username (sans @)"
+      autocomplete="off"
+      spellcheck="false"
+      required
+    >
+    <button type="submit" id="btn">Surveiller</button>
+  </form>
+
+  <div id="card">
+    <div class="status-row">
+      <div class="dot" id="status-dot"></div>
+      <span id="status-label"></span>
+    </div>
+    <div class="details" id="details"></div>
+    <div class="monitor-badge">
+      <div class="monitor-dot" id="monitor-dot"></div>
+      <span id="monitor-label">Connexion...</span>
+    </div>
+  </div>
+
+  <script>
+    const form        = document.getElementById('form');
+    const usernameEl  = document.getElementById('username');
+    const btn         = document.getElementById('btn');
+    const card        = document.getElementById('card');
+    const statusDot   = document.getElementById('status-dot');
+    const statusLabel = document.getElementById('status-label');
+    const detailsEl   = document.getElementById('details');
+    const monitorDot  = document.getElementById('monitor-dot');
+    const monitorLbl  = document.getElementById('monitor-label');
+
+    let source = null;        // current EventSource
+    let lastUpdated = null;   // Date of last received event
+
+    // ── SSE connection ────────────────────────────────────────────────────────
+
+    function startMonitoring(username) {
+      stopMonitoring();
+
+      card.style.display = 'flex';
+      setMonitorStatus('connecting', 'Connexion en cours...');
+      statusDot.className = 'dot offline';
+      statusLabel.textContent = `@${username}`;
+      detailsEl.innerHTML = '';
+
+      source = new EventSource(`/api/stream/${encodeURIComponent(username)}`);
+
+      source.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        lastUpdated = new Date();
+
+        if (data.error) {
+          if (data.transient) {
+            // Temporary TikTok API error — keep monitoring, show warning
+            setMonitorStatus('error', `Erreur temporaire, nouvelle tentative dans 5s`);
+          } else {
+            // Fatal error (user not found) — stop
+            showError(data.error);
+            stopMonitoring();
+          }
+          return;
+        }
+
+        renderStatus(data);
+        setMonitorStatus('active', `Mis à jour à ${lastUpdated.toLocaleTimeString()}`);
+      };
+
+      // onerror fires on network issues — EventSource auto-reconnects.
+      // We just show a "reconnecting" state; the next onmessage will clear it.
+      source.onerror = () => {
+        if (source && source.readyState !== EventSource.CLOSED) {
+          setMonitorStatus('connecting', 'Reconnexion...');
+        }
+      };
+    }
+
+    function stopMonitoring() {
+      if (source) {
+        source.close();
+        source = null;
+      }
+    }
+
+    // ── UI rendering ──────────────────────────────────────────────────────────
+
+    function renderStatus(data) {
+      const live = data.is_live;
+
+      statusDot.className = `dot ${live ? 'live' : 'offline'}`;
+      statusLabel.innerHTML = `@${data.username} est <strong>${live ? 'EN LIVE' : 'HORS LIGNE'}</strong>`;
+
+      if (!live) {
+        detailsEl.innerHTML = '';
+        return;
+      }
+
+      const rows = [];
+
+      if (data.title) {
+        rows.push(`
+          <div class="detail-row">
+            <span>🎙</span>
+            <strong>${escHtml(data.title)}</strong>
+          </div>`);
+      }
+
+      if (data.viewer_count !== null && data.viewer_count !== undefined) {
+        rows.push(`
+          <div class="detail-row">
+            <span>👁</span>
+            <strong>${data.viewer_count.toLocaleString()}</strong> spectateurs
+          </div>`);
+      }
+
+      if (data.room_id) {
+        rows.push(`
+          <div class="detail-row">
+            Room ID <span class="tag">${data.room_id}</span>
+          </div>`);
+      }
+
+      detailsEl.innerHTML = rows.join('');
+    }
+
+    function showError(message) {
+      statusDot.className = 'dot offline';
+      statusLabel.innerHTML = '';
+      detailsEl.innerHTML = `<span class="error-msg">${escHtml(message)}</span>`;
+      setMonitorStatus('error', 'Surveillance arrêtée');
+    }
+
+    function setMonitorStatus(state, label) {
+      monitorDot.className = `monitor-dot ${state === 'active' ? '' : state}`;
+      monitorLbl.textContent = label;
+    }
+
+    // Prevent XSS from TikTok data
+    function escHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    // ── Form submit ───────────────────────────────────────────────────────────
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const username = usernameEl.value.trim().replace(/^@/, '');
+      if (!username) return;
+      startMonitoring(username);
+    });
+
+    // Stop monitoring when the user starts typing a new username
+    usernameEl.addEventListener('input', stopMonitoring);
+  </script>
+</body>
+</html>

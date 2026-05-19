@@ -1,0 +1,101 @@
+name: tofu · plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "infra/flyio/**"
+      - ".github/workflows/tofu-*.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: tofu-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan · infra/flyio
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: opentofu/setup-opentofu@fc711fa910b93cba0f3fbecaafc9f42fd0c411cb # v2.0.0
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Format check
+        run: tofu -chdir=infra/flyio fmt -check -recursive
+
+      - name: Init
+        run: tofu -chdir=infra/flyio init
+
+      - name: Validate
+        run: tofu -chdir=infra/flyio validate
+
+      - name: Plan
+        id: plan
+        run: tofu -chdir=infra/flyio plan -no-color 2>&1 | tee /tmp/plan.txt
+        continue-on-error: true
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Post plan comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs     = require('fs');
+            const raw    = fs.readFileSync('/tmp/plan.txt', 'utf8');
+            const plan   = raw.length > 55000
+              ? '...(truncated — see full run)\n' + raw.slice(raw.length - 55000)
+              : raw;
+
+            const outcome = '${{ steps.plan.outcome }}';
+            const icon    = outcome === 'success' ? '✅' : '❌';
+            const marker  = '<!-- tofu-plan:infra/flyio -->';
+
+            const body = [
+              marker,
+              `#### ${icon} OpenTofu Plan · \`infra/flyio\` · \`${outcome}\``,
+              '',
+              '<details><summary>Show output</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '',
+              '</details>',
+              '',
+              `> [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c => c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail on plan error
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

@@ -1,0 +1,39 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local dev
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+
+# Data — never bundle the local webhooks DB into the image
+data/
+
+# Tests — not needed at runtime
+tests/
+
+# Tooling
+.pre-commit-config.yaml
+Makefile
+ruff.toml
+pytest.ini
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# Fly.io
+.fly/
