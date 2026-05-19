@@ -13,29 +13,15 @@ import {
 }
 
 
-# ── Persistent volume ─────────────────────────────────────────────────────────
-# Stores webhooks.db across deploys and restarts.
-# Mounted at /data inside the container (see fly.toml [[mounts]]).
-
-resource "fly_volume" "data" {
-  name   = "notitk_data"
-  app    = fly_app.this.name
-  size   = var.volume_size_gb
-  region = var.region
-}
-
-# Import existing volume created via CLI:
-#   tofu import fly_volume.data notitk,vol_vz88wex7359onlxv
-import {
-  to = fly_volume.data
-  id = "notitk,vol_vz88wex7359onlxv"
-}
-
-
 # ── Notes ─────────────────────────────────────────────────────────────────────
 # Machines (compute) are intentionally NOT managed here.
 # They are created and updated by `flyctl deploy` in CI/CD (ci.yml → deploy job).
 # This keeps infrastructure (app shell + volume) separate from deployment (image).
+#
+# Persistent volume (notitk_data / vol_vz88wex7359onlxv, 1 GB, cdg) is NOT
+# managed here — the fly-apps/fly provider has a known bug with volume import
+# (AttributeName("internalid") schema mismatch). The volume was created via CLI
+# and is stable; manage it with `fly volumes` commands if needed.
 #
 # Secrets (API_KEYS, etc.) are also not managed here — they would appear in
 # Terraform state in plaintext. Use `fly secrets set` or Doppler instead.

@@ -9,9 +9,3 @@ variable "region" {
   description = "Primary Fly.io region."
   default     = "cdg"
 }
-
-variable "volume_size_gb" {
-  type        = number
-  description = "Size of the persistent volume in GB (stores webhooks.db)."
-  default     = 1
-}
