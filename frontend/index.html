@@ -189,9 +189,12 @@
     let source = null;        // current EventSource
     let lastUpdated = null;   // Date of last received event
 
+    // API key from URL: https://notitk.fly.dev/?key=sk_live_xxx
+    const urlKey = new URLSearchParams(location.search).get('key') || '';
+
     // ── SSE connection ────────────────────────────────────────────────────────
 
-    function startMonitoring(username) {
+    async function startMonitoring(username) {
       stopMonitoring();
 
       card.style.display = 'flex';
@@ -200,7 +203,21 @@
       statusLabel.textContent = `@${username}`;
       detailsEl.innerHTML = '';
 
-      source = new EventSource(`/api/stream/${encodeURIComponent(username)}`);
+      // If auth is enabled server-side but no key provided, fail fast instead
+      // of looping on 401 (EventSource cannot read HTTP status codes).
+      try {
+        const health = await fetch('/health').then(r => r.json());
+        if (health.auth_enabled && !urlKey) {
+          showError('Clé API requise — ajoutez ?key=votre-clé à l\'URL');
+          return;
+        }
+      } catch (_) { /* health check failed — try anyway */ }
+
+      const streamUrl = urlKey
+        ? `/api/stream/${encodeURIComponent(username)}?key=${encodeURIComponent(urlKey)}`
+        : `/api/stream/${encodeURIComponent(username)}`;
+
+      source = new EventSource(streamUrl);
 
       source.onmessage = (event) => {
         const data = JSON.parse(event.data);
