@@ -59,11 +59,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .auth import api_key_dependency, AUTH_ENABLED
+from .keys import generate_key, list_keys, revoke_key, ADMIN_SECRET
 from .models import LiveStatus, ErrorResponse, WatchRequest, WatchResponse
 from .webhooks import (
     register_webhook,
@@ -287,6 +288,73 @@ async def live_stream_multi(
     return StreamingResponse(
         _sse_generator_multi(usernames), media_type="text/event-stream", headers=_SSE_HEADERS
     )
+
+
+# ── Self-service key endpoints ────────────────────────────────────────────────
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    return (
+        xff.split(",")[0].strip()
+        if xff
+        else (request.client.host if request.client else "unknown")
+    )
+
+
+def _require_admin(x_admin_secret: Annotated[str | None, Header(alias="X-Admin-Secret")] = None):
+    if not ADMIN_SECRET or x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=404)
+
+
+@app.post(
+    "/api/keys",
+    status_code=201,
+    summary="Generate a self-service API key",
+    tags=["Keys"],
+)
+async def create_key(request: Request, label: str | None = None):
+    """
+    Generate a new API key. **The key is shown only once — save it immediately.**
+
+    Rate-limited: max 3 keys per IP per 24 hours.
+
+    Pass an optional `label` query param to identify the key (e.g. `?label=my-bot`).
+    """
+    ip = _client_ip(request)
+    try:
+        key_id, raw_key = generate_key(ip, label)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    return {
+        "id": key_id,
+        "key": raw_key,
+        "warning": "Copiez cette clé maintenant — elle ne sera plus affichée.",
+    }
+
+
+@app.get(
+    "/api/admin/keys",
+    summary="List all API keys (admin)",
+    tags=["Admin"],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_list_keys():
+    """List all generated keys with their metadata. Requires `X-Admin-Secret` header."""
+    return list_keys()
+
+
+@app.delete(
+    "/api/admin/keys/{key_id}",
+    status_code=204,
+    summary="Revoke an API key (admin)",
+    tags=["Admin"],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_revoke_key(key_id: str):
+    """Revoke a key by its ID. The key immediately stops working."""
+    if not revoke_key(key_id):
+        raise HTTPException(status_code=404, detail=f"Key '{key_id}' not found.")
 
 
 # ── Webhook endpoints ─────────────────────────────────────────────────────────

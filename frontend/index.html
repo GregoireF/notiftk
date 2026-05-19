@@ -171,6 +171,15 @@
       font-size: 0.875rem;
     }
     #key-status { font-size: 0.75rem; color: #22c55e; min-height: 1em; }
+    #key-gen-section { border-top: 1px solid #222; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    #key-gen-section label { font-size: 0.8rem; color: #6b7280; }
+    #key-gen-btn { align-self: flex-start; background: #1f2937; color: #9ca3af; border: 1px solid #374151; padding: 7px 14px; font-size: 0.8rem; }
+    #key-gen-btn:hover:not(:disabled) { background: #374151; color: #f1f1f1; }
+    #key-result { display: none; flex-direction: column; gap: 6px; }
+    #key-result-row { display: flex; gap: 6px; }
+    #key-result input { font-family: monospace; font-size: 0.78rem; background: #0f0f0f; color: #22c55e; border-color: #1f2937; }
+    #key-copy-btn { background: #1f2937; color: #9ca3af; border: 1px solid #374151; padding: 7px 12px; font-size: 0.8rem; white-space: nowrap; }
+    #key-warning { font-size: 0.72rem; color: #f59e0b; }
   </style>
 </head>
 <body>
@@ -184,6 +193,17 @@
       <button type="button" id="key-save-btn">Enregistrer</button>
     </div>
     <span id="key-status"></span>
+    <div id="key-gen-section">
+      <label>Pas encore de clé ?</label>
+      <button type="button" id="key-gen-btn">Générer une clé gratuite</button>
+      <div id="key-result">
+        <div id="key-result-row">
+          <input id="key-result-val" type="text" readonly>
+          <button type="button" id="key-copy-btn">Copier</button>
+        </div>
+        <span id="key-warning">⚠ Copiez-la maintenant — elle ne sera plus affichée.</span>
+      </div>
+    </div>
   </div>
 
   <form id="form">
@@ -271,6 +291,40 @@
       saveApiKey(k);
       keyStatus.textContent = k ? 'Clé enregistrée' : 'Clé supprimée';
       setTimeout(() => { keyStatus.textContent = ''; }, 2500);
+    });
+
+    // ── Key generation ────────────────────────────────────────────────────────
+    const keyGenBtn    = document.getElementById('key-gen-btn');
+    const keyResult    = document.getElementById('key-result');
+    const keyResultVal = document.getElementById('key-result-val');
+    const keyCopyBtn   = document.getElementById('key-copy-btn');
+
+    keyGenBtn.addEventListener('click', async () => {
+      keyGenBtn.disabled = true;
+      keyGenBtn.textContent = 'Génération…';
+      try {
+        const res = await fetch('/api/keys', { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.detail || 'Erreur');
+        keyResultVal.value = json.key;
+        keyResult.style.display = 'flex';
+        // Auto-fill the key input and save it
+        keyInput.value = json.key;
+        saveApiKey(json.key);
+        keyStatus.textContent = 'Clé générée et enregistrée';
+      } catch (err) {
+        keyStatus.textContent = `Erreur : ${err.message}`;
+      } finally {
+        keyGenBtn.disabled = false;
+        keyGenBtn.textContent = 'Générer une clé gratuite';
+      }
+    });
+
+    keyCopyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(keyResultVal.value).then(() => {
+        keyCopyBtn.textContent = 'Copié !';
+        setTimeout(() => { keyCopyBtn.textContent = 'Copier'; }, 2000);
+      });
     });
 
     // ── SSE connection ────────────────────────────────────────────────────────

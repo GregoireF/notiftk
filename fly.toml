@@ -2,8 +2,8 @@
 # Docs: https://fly.io/docs/reference/configuration/
 #
 # First deploy:
-#   fly volumes create notitk_data --size 1 --region cdg   # persistent storage for webhooks
-#   fly secrets set API_KEYS=sk_live_abc123,sk_live_xyz789
+#   fly volumes create notiftk_data --size 1 --region cdg   # persistent storage for webhooks
+#   fly secrets set API_KEYS=sk_live_abc123 ADMIN_SECRET=your-admin-secret
 #   fly deploy
 #
 # Useful commands:
@@ -11,7 +11,7 @@
 #   fly ssh console   — open a shell on the machine
 #   fly status        — machine health + recent deployments
 
-app            = "notitk"
+app            = "notiftk"
 primary_region = "cdg"
 
 [build]
@@ -41,9 +41,9 @@ primary_region = "cdg"
   cpus     = 1
 
 # Persistent volume — keeps webhooks.db across deploys and restarts.
-# Create once: fly volumes create notitk_data --size 1 --region cdg
+# Create once: fly volumes create notiftk_data --size 1 --region cdg
 [[mounts]]
-  source      = "notitk_data"
+  source      = "notiftk_data"
   destination = "/data"
 
 # Health check — Fly routes traffic only after this returns 200.
