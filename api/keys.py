@@ -35,6 +35,7 @@ _gen_log: dict[str, list[float]] = {}
 
 
 def _db() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS api_keys (
