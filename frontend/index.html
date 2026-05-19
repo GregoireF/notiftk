@@ -145,11 +145,46 @@
 
     /* Error state */
     .error-msg { color: #f87171; font-size: 0.9rem; }
+
+    /* Key banner */
+    #key-banner {
+      width: 100%;
+      max-width: 440px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #key-banner label { font-size: 0.8rem; color: #6b7280; }
+    #key-banner .key-row { display: flex; gap: 8px; }
+    #key-banner input {
+      flex: 1;
+      padding: 9px 12px;
+      font-size: 0.875rem;
+      font-family: monospace;
+    }
+    #key-banner button {
+      padding: 9px 14px;
+      font-size: 0.875rem;
+    }
+    #key-status { font-size: 0.75rem; color: #22c55e; min-height: 1em; }
   </style>
 </head>
 <body>
   <h1>Noti<span>TK</span></h1>
   <p class="subtitle">Surveillance en temps réel des lives TikTok</p>
+
+  <div id="key-banner">
+    <label for="key-input">Clé API</label>
+    <div class="key-row">
+      <input id="key-input" type="password" placeholder="sk_live_..." autocomplete="off" spellcheck="false">
+      <button type="button" id="key-save-btn">Enregistrer</button>
+    </div>
+    <span id="key-status"></span>
+  </div>
 
   <form id="form">
     <input
@@ -185,12 +220,58 @@
     const detailsEl   = document.getElementById('details');
     const monitorDot  = document.getElementById('monitor-dot');
     const monitorLbl  = document.getElementById('monitor-label');
+    const keyBanner   = document.getElementById('key-banner');
+    const keyInput    = document.getElementById('key-input');
+    const keySaveBtn  = document.getElementById('key-save-btn');
+    const keyStatus   = document.getElementById('key-status');
 
     let source = null;        // current EventSource
     let lastUpdated = null;   // Date of last received event
 
-    // API key from URL: https://notitk.fly.dev/?key=sk_live_xxx
-    const urlKey = new URLSearchParams(location.search).get('key') || '';
+    // ── API key management ────────────────────────────────────────────────────
+    // Priority: ?key= URL param (one-time) > localStorage (persistent)
+
+    const _LS_KEY = 'notiftk_api_key';
+
+    function getApiKey() {
+      return new URLSearchParams(location.search).get('key')
+          || localStorage.getItem(_LS_KEY)
+          || '';
+    }
+
+    function saveApiKey(k) {
+      if (k) localStorage.setItem(_LS_KEY, k);
+      else   localStorage.removeItem(_LS_KEY);
+    }
+
+    // If a ?key= param is in the URL, persist it and clean the URL
+    (function bootstrapKey() {
+      const urlKey = new URLSearchParams(location.search).get('key');
+      if (urlKey) {
+        saveApiKey(urlKey);
+        const clean = location.pathname + location.hash;
+        history.replaceState(null, '', clean);
+      }
+    })();
+
+    // Show or hide key banner based on whether auth is required
+    fetch('/health').then(r => r.json()).then(h => {
+      if (h.auth_enabled) {
+        keyBanner.style.display = 'flex';
+        const saved = localStorage.getItem(_LS_KEY);
+        if (saved) {
+          keyInput.value = saved;
+          keyStatus.textContent = 'Clé enregistrée';
+        }
+      }
+    }).catch(() => {});
+
+    keySaveBtn.addEventListener('click', () => {
+      const k = keyInput.value.trim();
+      saveApiKey(k);
+      keyStatus.textContent = k ? 'Clé enregistrée' : 'Clé supprimée';
+      setTimeout(() => { keyStatus.textContent = ''; }, 2500);
+    });
 
     // ── SSE connection ────────────────────────────────────────────────────────
 
@@ -203,18 +284,19 @@
       statusLabel.textContent = `@${username}`;
       detailsEl.innerHTML = '';
 
-      // If auth is enabled server-side but no key provided, fail fast instead
-      // of looping on 401 (EventSource cannot read HTTP status codes).
+      // Fail fast if auth is enabled but no key available — EventSource cannot
+      // read HTTP status codes so a 401 would cause an invisible reconnect loop.
+      const apiKey = getApiKey();
       try {
         const health = await fetch('/health').then(r => r.json());
-        if (health.auth_enabled && !urlKey) {
-          showError('Clé API requise — ajoutez ?key=votre-clé à l\'URL');
+        if (health.auth_enabled && !apiKey) {
+          showError('Clé API requise — entrez votre clé ci-dessus');
           return;
         }
       } catch (_) { /* health check failed — try anyway */ }
 
-      const streamUrl = urlKey
-        ? `/api/stream/${encodeURIComponent(username)}?key=${encodeURIComponent(urlKey)}`
+      const streamUrl = apiKey
+        ? `/api/stream/${encodeURIComponent(username)}?key=${encodeURIComponent(apiKey)}`
         : `/api/stream/${encodeURIComponent(username)}`;
 
       source = new EventSource(streamUrl);
