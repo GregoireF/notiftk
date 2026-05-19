@@ -1,5 +1,5 @@
 """
-Authentication and rate limiting for NotiTK.
+Authentication and rate limiting for NotiTFK.
 
 Auth:
   API key via X-API-Key header (REST) or ?key= query param (SSE).

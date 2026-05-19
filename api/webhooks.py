@@ -1,12 +1,12 @@
 """
-Webhook dispatch for NotiTK.
+Webhook dispatch for NotiTFK.
 
 Callers register a (username, callback_url) pair via register_webhook(). A
 background asyncio task polls TikTok via get_live_status_sse and fires an HTTP
 POST to the callback whenever is_live changes.
 
 Optional HMAC-SHA256 signing: if `secret` is provided at registration, every
-POST includes an `X-NotiTK-Signature: sha256=<hex>` header so the receiver
+POST includes an `X-NotiTFK-Signature: sha256=<hex>` header so the receiver
 can verify authenticity.
 
 Security:
@@ -304,7 +304,7 @@ async def _dispatch(watcher: _Watcher, status: LiveStatus) -> bool:
 
     if watcher.secret:
         sig = hmac.new(watcher.secret.encode(), payload, hashlib.sha256).hexdigest()
-        headers["X-NotiTK-Signature"] = f"sha256={sig}"
+        headers["X-NotiTFK-Signature"] = f"sha256={sig}"
 
     try:
         async with httpx.AsyncClient(timeout=DISPATCH_TIMEOUT) as client:

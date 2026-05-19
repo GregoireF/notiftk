@@ -1,4 +1,4 @@
-# NotiTK
+# NotiTFK
 
 API REST + SSE pour détecter en temps réel si un utilisateur TikTok est en live.
 
@@ -158,7 +158,7 @@ function watchStreamer(discordClient, username) {
 
     // Erreur fatale (user inexistant) — on arrête
     if (status.error && !status.transient) {
-      console.error(`[NotiTK] ${username}: ${status.error}`);
+      console.error(`[NotiTFK] ${username}: ${status.error}`);
       src.close();
       return;
     }
@@ -182,7 +182,7 @@ function watchStreamer(discordClient, username) {
   };
 
   // EventSource se reconnecte automatiquement sur erreur réseau
-  src.onerror = () => console.warn(`[NotiTK] Reconnexion pour ${username}...`);
+  src.onerror = () => console.warn(`[NotiTFK] Reconnexion pour ${username}...`);
 
   return src; // garder une référence pour src.close() si besoin
 }
@@ -275,7 +275,7 @@ const { watch_id } = await res.json();
 // Recevoir les notifications (côté bot — Express, Fastify, etc.)
 app.post('/notiftk-hook', (req, res) => {
   // Vérifier la signature si secret configuré
-  const sig = req.headers['x-notitk-signature'];
+  const sig = req.headers['x-notiftk-signature'];
   if (sig) {
     const expected = 'sha256=' + require('crypto')
       .createHmac('sha256', process.env.NOTIFTK_WEBHOOK_SECRET)
@@ -413,7 +413,7 @@ data: {"username":"pokimane","is_live":false,...}
 ---
 
 ### `POST /api/watch`
-Enregistre un webhook. NotiTK postera à l'URL donnée à chaque changement `is_live`.
+Enregistre un webhook. NotiTFK postera à l'URL donnée à chaque changement `is_live`.
 
 **Corps :**
 ```json
@@ -508,7 +508,7 @@ curl -X DELETE -H "X-Admin-Secret: votre-secret" https://notiftk.fly.dev/api/adm
 
 ## Authentification & clés API
 
-NotiTK supporte deux types de clés — elles sont équivalentes côté validation :
+NotiTFK supporte deux types de clés — elles sont équivalentes côté validation :
 
 ### Clés d'environnement (admin)
 
@@ -590,7 +590,7 @@ function verifySignature(rawBody, signature, secret) {
 }
 
 app.post('/hook', express.raw({ type: 'application/json' }), (req, res) => {
-  const sig = req.headers['x-notitk-signature'];
+  const sig = req.headers['x-notiftk-signature'];
   if (!verifySignature(req.body, sig, process.env.NOTIFTK_SECRET)) {
     return res.sendStatus(401);
   }
@@ -780,10 +780,10 @@ tofu apply
 
 ### Fonctionnement
 
-TikTok n'a pas d'API publique pour le statut live. NotiTK passe par [TikTokLive](https://github.com/isaackogan/TikTokLive), qui utilise les mêmes endpoints internes que le navigateur — avec génération automatique du `msToken` anti-bot.
+TikTok n'a pas d'API publique pour le statut live. NotiTFK passe par [TikTokLive](https://github.com/isaackogan/TikTokLive), qui utilise les mêmes endpoints internes que le navigateur — avec génération automatique du `msToken` anti-bot.
 
 ```
-Client → NotiTK → TikTok (fetch_room_id) → TikTok (fetch_room_info)
+Client → NotiTFK → TikTok (fetch_room_id) → TikTok (fetch_room_info)
                 ↳ Cache REST 30s  (bots one-shot)
                 ↳ Cache SSE  5s   (partagé entre N subscribers → 1 appel/5s)
 ```

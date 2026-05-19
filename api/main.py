@@ -1,5 +1,5 @@
 """
-NotiTK — TikTok live status API.
+NotiTFK — TikTok live status API.
 
 Five complementary endpoints:
 
@@ -16,8 +16,8 @@ Five complementary endpoints:
       the `username` field. Same change-only semantics.
 
   POST /api/watch
-      Register a webhook: NotiTK POSTs to your URL whenever is_live changes.
-      No persistent connection needed. Optional HMAC-SHA256 signing.
+      Register a webhook: NotiTFK POSTs to your URL whenever is_live changes.
+      No persistent connection needed. Optional HMAC-SHA256 signing (X-NotiTFK-Signature header).
 
   DELETE /api/watch/{watch_id}
       Unregister a previously registered webhook.
@@ -108,7 +108,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="NotiTK",
+    title="NotiTFK",
     description=__doc__,
     version="0.3.0",
     lifespan=lifespan,
@@ -380,7 +380,7 @@ async def watch(body: WatchRequest):
     ```
 
     The POST body is identical to the REST status endpoint response.
-    Pass `secret` to enable HMAC-SHA256 signing (`X-NotiTK-Signature: sha256=<hex>`).
+    Pass `secret` to enable HMAC-SHA256 signing (`X-NotiTFK-Signature: sha256=<hex>`).
 
     Returns a `watch_id` — keep it to unregister later with `DELETE /api/watch/{watch_id}`.
     """

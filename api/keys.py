@@ -1,5 +1,5 @@
 """
-Self-service API key management for NotiTK.
+Self-service API key management for NotiTFK.
 
 Keys are stored as SHA-256 hashes in the same SQLite database as webhooks.
 The raw key is returned once at generation time and cannot be recovered later.

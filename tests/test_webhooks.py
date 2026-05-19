@@ -260,7 +260,7 @@ async def test_dispatch_includes_hmac_signature_when_secret_set():
         await _dispatch(watcher, status)
 
     headers = mock_client.post.call_args.kwargs["headers"]
-    assert headers.get("X-NotiTK-Signature") == expected_sig
+    assert headers.get("X-NotiTFK-Signature") == expected_sig
 
 
 @pytest.mark.asyncio
