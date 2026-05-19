@@ -62,16 +62,23 @@ def _check_rate_limit(identity: str) -> None:
     log = _request_log[identity]
 
     # Evict timestamps outside the window
-    _request_log[identity] = [t for t in log if t > window_start]
+    recent = [t for t in log if t > window_start]
 
-    if len(_request_log[identity]) >= RATE_LIMIT_REQUESTS:
+    if not recent:
+        # All timestamps expired — free memory for this identity
+        _request_log.pop(identity, None)
+        recent = []
+    else:
+        _request_log[identity] = recent
+
+    if len(recent) >= RATE_LIMIT_REQUESTS:
         raise HTTPException(
             status_code=429,
             detail=f"Rate limit exceeded: {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW}s.",
             headers={"Retry-After": str(RATE_LIMIT_WINDOW)},
         )
 
-    _request_log[identity].append(now)
+    _request_log.setdefault(identity, []).append(now)
 
 
 # ── FastAPI security schemes ──────────────────────────────────────────────────

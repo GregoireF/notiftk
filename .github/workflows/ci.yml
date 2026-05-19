@@ -27,8 +27,8 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
 
       - name: Lint
         run: ruff check .
@@ -36,9 +36,47 @@ jobs:
       - name: Format check
         run: ruff format --check .
 
-  # ── Test ─────────────────────────────────────────────────────────────────────
+  # ── Type checking ─────────────────────────────────────────────────────────────
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Type check
+        run: mypy api/ --ignore-missing-imports
+
+  # ── Security audit ────────────────────────────────────────────────────────────
+  audit:
+    name: Security audit (pip-audit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit dependencies
+        run: pip-audit -r requirements.txt
+
+  # ── Test + Coverage ───────────────────────────────────────────────────────────
   test:
-    name: Unit tests
+    name: Unit tests + coverage
     runs-on: ubuntu-latest
     needs: lint
 
@@ -50,19 +88,26 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
 
-      - name: Run tests (unit only — no network)
-        run: pytest tests/ -m "not integration" -v
+      - name: Run tests with coverage
+        run: pytest tests/ -m "not integration" -v --cov=api --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
 
   # ── Deploy ───────────────────────────────────────────────────────────────────
-  # Only runs on push to main (not on PRs) after tests pass.
-  # Requires FLY_API_TOKEN secret set in GitHub repo → Settings → Secrets → Actions.
-  # Generate with: fly tokens create deploy
+  # Only runs on push to main (not on PRs) after all checks pass.
+  # Requires FLY_API_TOKEN secret: GitHub → Settings → Secrets → Actions.
+  # Generate with: fly tokens create deploy -a notiftk
   deploy:
     name: Deploy to Fly.io
-    needs: test
+    needs: [test, typecheck, audit]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
@@ -77,3 +122,13 @@ jobs:
         run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Smoke test
+        run: |
+          sleep 10
+          status=$(curl -s -o /dev/null -w "%{http_code}" https://notiftk.fly.dev/health)
+          if [ "$status" != "200" ]; then
+            echo "Smoke test failed — /health returned $status"
+            exit 1
+          fi
+          echo "Smoke test passed — /health returned 200"

@@ -54,7 +54,10 @@ Environment variables:
 
 import asyncio
 import json
+import logging
+import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -65,7 +68,15 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .auth import api_key_dependency, AUTH_ENABLED
 from .keys import generate_key, list_keys, revoke_key, ADMIN_SECRET
-from .models import LiveStatus, ErrorResponse, WatchRequest, WatchResponse
+from .models import (
+    AdminKeyResponse,
+    ErrorResponse,
+    HealthResponse,
+    KeyResponse,
+    LiveStatus,
+    WatchRequest,
+    WatchResponse,
+)
 from .webhooks import (
     register_webhook,
     unregister_webhook,
@@ -84,6 +95,8 @@ from .tiktok import (
     POLL_INTERVAL,
 )
 
+_START_TIME = time.monotonic()
+
 HEARTBEAT_EVERY = 6  # 6 × POLL_INTERVAL = 30s heartbeat interval
 _MULTI_DONE = object()  # sentinel: all per-user tasks in _sse_generator_multi exited
 
@@ -100,11 +113,23 @@ _SSE_HEADERS = {
 _MAX_USERS = 10
 
 
+def _configure_logging() -> None:
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _configure_logging()
+    logging.getLogger(__name__).info("NotiTFK starting up — auth_enabled=%s", AUTH_ENABLED)
     await restore_webhooks()
     yield
     await shutdown_webhooks()
+    logging.getLogger(__name__).info("NotiTFK shut down cleanly")
 
 
 app = FastAPI(
@@ -114,11 +139,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "X-API-Key", "X-Admin-Secret"],
+    expose_headers=["Retry-After"],
 )
 
 # Shared dependency — avoids repeating Depends(api_key_dependency) everywhere
@@ -143,8 +170,20 @@ async def serve_frontend():
     return FileResponse(_FRONTEND_PATH)
 
 
-@app.get("/health", summary="Liveness check", tags=["Meta"])
-async def health():
+def _db_ok() -> bool:
+    """Quick write-read check on the SQLite file used by keys/webhooks."""
+    try:
+        from .keys import _db
+
+        with _db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/health", response_model=HealthResponse, summary="Liveness check", tags=["Meta"])
+async def health() -> HealthResponse:
     """
     Returns 200 when the server process is alive.
 
@@ -152,14 +191,16 @@ async def health():
     balancers (Fly.io, Docker, k8s). Use `/api/status/{username}` to verify
     TikTok connectivity.
     """
-    return {
-        "status": "ok",
-        "version": app.version,
-        "auth_enabled": AUTH_ENABLED,
-        "cache_ttl_seconds": CACHE_TTL,
-        "poll_interval_seconds": POLL_INTERVAL,
-        "active_webhooks": len(list_webhooks()),
-    }
+    return HealthResponse(
+        status="ok",
+        version=app.version,
+        auth_enabled=AUTH_ENABLED,
+        cache_ttl_seconds=CACHE_TTL,
+        poll_interval_seconds=POLL_INTERVAL,
+        active_webhooks=len(list_webhooks()),
+        uptime_seconds=round(time.monotonic() - _START_TIME, 1),
+        db_ok=_db_ok(),
+    )
 
 
 # ── One-shot REST endpoint ────────────────────────────────────────────────────
@@ -307,11 +348,13 @@ def _require_admin(x_admin_secret: Annotated[str | None, Header(alias="X-Admin-S
 
 @app.post(
     "/api/keys",
+    response_model=KeyResponse,
     status_code=201,
+    responses={429: {"description": "Per-IP or global key cap reached"}},
     summary="Generate a self-service API key",
     tags=["Keys"],
 )
-async def create_key(request: Request, label: str | None = None):
+async def create_key(request: Request, label: str | None = None) -> KeyResponse:
     """
     Generate a new API key. **The key is shown only once — save it immediately.**
 
@@ -324,22 +367,23 @@ async def create_key(request: Request, label: str | None = None):
         key_id, raw_key = generate_key(ip, label)
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
-    return {
-        "id": key_id,
-        "key": raw_key,
-        "warning": "Copiez cette clé maintenant — elle ne sera plus affichée.",
-    }
+    return KeyResponse(
+        id=key_id,
+        key=raw_key,
+        warning="Copiez cette clé maintenant — elle ne sera plus affichée.",
+    )
 
 
 @app.get(
     "/api/admin/keys",
+    response_model=list[AdminKeyResponse],
     summary="List all API keys (admin)",
     tags=["Admin"],
     dependencies=[Depends(_require_admin)],
 )
-async def admin_list_keys():
+async def admin_list_keys() -> list[AdminKeyResponse]:
     """List all generated keys with their metadata. Requires `X-Admin-Secret` header."""
-    return list_keys()
+    return [AdminKeyResponse(**k) for k in list_keys()]
 
 
 @app.delete(

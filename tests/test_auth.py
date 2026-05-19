@@ -38,6 +38,21 @@ def test_health_always_accessible():
     assert r.json()["status"] == "ok"
 
 
+def test_health_response_schema():
+    """Health endpoint must return all documented fields."""
+    r = client.get("/health")
+    body = r.json()
+    assert body["status"] == "ok"
+    assert isinstance(body["auth_enabled"], bool)
+    assert isinstance(body["cache_ttl_seconds"], int)
+    assert isinstance(body["poll_interval_seconds"], int)
+    assert isinstance(body["active_webhooks"], int)
+    assert isinstance(body["uptime_seconds"], float)
+    assert isinstance(body["db_ok"], bool)
+    assert body["db_ok"] is True
+    assert "version" in body
+
+
 # ── Auth disabled (no API_KEYS set) ──────────────────────────────────────────
 
 

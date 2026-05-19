@@ -355,3 +355,43 @@ class TestWatchEndpoints:
         r = sync_client.get("/health")
         assert r.status_code == 200
         assert "active_webhooks" in r.json()
+
+    def test_post_watch_short_secret_returns_422(self):
+        """Secrets shorter than 8 chars should be rejected by the model validator."""
+        r = sync_client.post(
+            "/api/watch",
+            json={
+                "username": "ninja",
+                "callback_url": "https://example.com/hook",
+                "secret": "short",
+            },
+        )
+        assert r.status_code == 422
+
+
+# ── SSE multi-username edge cases ─────────────────────────────────────────────
+
+
+class TestMultiSSE:
+    def test_empty_users_param_returns_422(self):
+        r = sync_client.get("/api/stream?users=")
+        assert r.status_code == 422
+
+    def test_too_many_users_returns_422(self):
+        users = ",".join([f"user{i}" for i in range(11)])
+        r = sync_client.get(f"/api/stream?users={users}")
+        assert r.status_code == 422
+
+    def test_invalid_username_in_list_returns_422(self):
+        r = sync_client.get("/api/stream?users=ninja,bad user!")
+        assert r.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_valid_multi_returns_streaming_response(self):
+        from fastapi.responses import StreamingResponse
+        from api.main import live_stream_multi
+
+        # Call the async handler directly — avoids hanging on the infinite SSE generator
+        response = await live_stream_multi(users="ninja,pokimane")
+        assert isinstance(response, StreamingResponse)
+        assert response.media_type == "text/event-stream"
