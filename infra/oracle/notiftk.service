@@ -1,0 +1,27 @@
+[Unit]
+Description=NotiTFK — TikTok Live Status API
+Documentation=https://github.com/GregoireF/notiftk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/notiftk
+EnvironmentFile=/opt/notiftk/.env
+ExecStart=/opt/notiftk/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8080
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=notiftk
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/data/notiftk /opt/notiftk
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -26,9 +26,10 @@
 ### Déploiement
 | Guide | Description |
 |---|---|
-| [Fly.io (recommandé)](deployment/flyio.md) | Déploiement gratuit avec persistance SQLite |
+| [Oracle Cloud Always Free](deployment/oracle.md) | VM ARM gratuite, toujours active, SQLite persistant |
+| [Fly.io](deployment/flyio.md) | PaaS simple avec volume SQLite |
 | [Local / développement](deployment/local.md) | Dev avec hot-reload, tests, pre-commit hooks |
-| [Autres plateformes](deployment/alternatives.md) | Koyeb, Oracle Cloud, Render, Docker — options gratuites |
+| [Autres plateformes](deployment/alternatives.md) | Koyeb, Render, Docker — comparatif complet |
 
 ### Référence technique
 | Guide | Description |

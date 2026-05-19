@@ -625,49 +625,34 @@ app.post('/hook', express.raw({ type: 'application/json' }), (req, res) => {
 
 ## Déploiement à 0 €
 
-### Option 1 — Fly.io (recommandé)
+> Guide complet → [docs/wiki/deployment/oracle.md](docs/wiki/deployment/oracle.md)
 
-> **Limitation trial** : sans carte bancaire enregistrée, Fly.io coupe les machines après **5 minutes**. L'EventSource se reconnecte automatiquement (comportement normal du protocole SSE), mais les connexions actives sont brièvement interrompues. Pour un usage en production, ajouter une CB sur [fly.io/dashboard](https://fly.io/dashboard) → Billing — le free tier (3 machines 256 MB) reste gratuit, la CB sert uniquement de garantie.
+### Option 1 — Oracle Cloud Always Free (recommandé)
 
-Fly.io offre **3 machines shared 256 MB** gratuites, toujours actives, HTTPS automatique, et **1 volume persistant** (3 GB). C'est la seule option gratuite qui supporte la persistance SQLite pour les webhooks.
+VM ARM Ampere A1 : **4 OCPUs / 24 GB RAM**, toujours active, stockage bloc persistant, **sans carte bancaire**. C'est la meilleure option pour une API longue durée avec persistance SQLite.
 
 ```bash
-# 1. Installer flyctl
-#    https://fly.io/docs/hands-on/install-flyctl/
+# 1. Créer une VM ARM (VM.Standard.A1.Flex) sur console.oracle.com
+#    → Image Ubuntu 22.04, 2 OCPUs, 12 GB RAM, IP publique, port 80/443 ouverts
 
-# 2. Créer l'app (une seule fois)
-fly launch --name notiftk --region cdg --no-deploy
+# 2. Créer un sous-domaine gratuit sur duckdns.org
+#    → noter ton token DuckDNS et pointer l'IP Oracle
 
-# 3. Créer le volume persistant pour webhooks et clés
-fly volumes create notiftk_data --size 1 --region cdg
+# 3. SSH dans la VM et lancer le setup en une commande
+export DOMAIN=notiftk.duckdns.org
+curl -fsSL https://raw.githubusercontent.com/GregoireF/notiftk/main/infra/oracle/setup.sh | bash
 
 # 4. Configurer les secrets
-fly secrets set \
-  API_KEYS=sk_live_abc123 \
-  ADMIN_SECRET=votre-secret-admin \
-  WEBHOOKS_DB=/data/webhooks.db
+nano /opt/notiftk/.env
 
-# 5. Déployer
-fly deploy
-
-# 6. Vérifier
-curl https://notiftk.fly.dev/health
+# 5. Démarrer
+sudo systemctl start notiftk
+curl https://notiftk.duckdns.org/health
 ```
 
-**CI/CD automatique :** chaque push sur `main` déclenche lint → tests → deploy.
-Configurer le secret GitHub `FLY_API_TOKEN` :
+Mettre à jour après un push :
 ```bash
-fly tokens create deploy   # copier la valeur
-# GitHub → Settings → Secrets → Actions → New secret → FLY_API_TOKEN
-```
-
-**Commandes utiles :**
-```bash
-fly logs             # logs en temps réel
-fly ssh console      # shell sur la machine
-fly status           # santé + déploiements récents
-fly volumes list     # vérifier que le volume est monté
-fly secrets list     # lister les secrets configurés
+bash /opt/notiftk/infra/oracle/deploy.sh
 ```
 
 ### Option 2 — Koyeb (sans persistance webhooks)
