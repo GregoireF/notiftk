@@ -18,7 +18,7 @@ terraform {
     organization = "gregoiref"
 
     workspaces {
-      name = "notiftk-flyio"
+      name = "notifk-flyio"
     }
   }
 }
