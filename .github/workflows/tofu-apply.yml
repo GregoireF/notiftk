@@ -6,6 +6,7 @@ on:
     paths:
       - "infra/flyio/**"
       - ".github/workflows/tofu-*.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
