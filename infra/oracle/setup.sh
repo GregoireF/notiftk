@@ -28,6 +28,8 @@ die()  { echo -e "${RED}[error]${NC} $*" >&2; exit 1; }
 
 log "Starting NotiTFK setup for domain: $DOMAIN"
 
+export DEBIAN_FRONTEND=noninteractive
+
 # ── 1. System packages ─────────────────────────────────────────────────────────
 log "Installing system packages..."
 sudo apt-get update -qq
