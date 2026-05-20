@@ -343,11 +343,28 @@
       const apiKey = getApiKey();
       try {
         const health = await fetch('/health').then(r => r.json());
-        if (health.auth_enabled && !apiKey) {
+        if (health.auth_enabled) {
+          if (!apiKey) {
+            showError('Clé API requise — entrez votre clé ci-dessus');
+            return;
+          }
+          // Validate key before opening SSE: a stale/invalid key causes a silent 401 loop.
+          const probe = await fetch(`/api/status/__probe?key=${encodeURIComponent(apiKey)}`);
+          if (probe.status === 401) {
+            saveApiKey('');
+            keyInput.value = '';
+            keyStatus.textContent = 'Clé expirée — régénérez-en une';
+            showError('Clé API invalide ou expirée — régénérez-en une ci-dessus');
+            return;
+          }
+        }
+      } catch (_) {
+        // Health/probe network error — only proceed if we have a key.
+        if (!apiKey) {
           showError('Clé API requise — entrez votre clé ci-dessus');
           return;
         }
-      } catch (_) { /* health check failed — try anyway */ }
+      }
 
       const streamUrl = apiKey
         ? `/api/stream/${encodeURIComponent(username)}?key=${encodeURIComponent(apiKey)}`
@@ -376,9 +393,17 @@
       };
 
       // onerror fires on network issues — EventSource auto-reconnects.
-      // We just show a "reconnecting" state; the next onmessage will clear it.
+      // CLOSED state means a fatal error (401, 403, wrong content-type…).
       source.onerror = () => {
-        if (source && source.readyState !== EventSource.CLOSED) {
+        if (!source) return;
+        if (source.readyState === EventSource.CLOSED) {
+          // Fatal — server rejected the connection (likely 401 with a stale key).
+          stopMonitoring();
+          saveApiKey('');
+          keyInput.value = '';
+          keyStatus.textContent = 'Clé expirée — régénérez-en une';
+          showError('Connexion refusée — clé API invalide ou expirée. Régénérez-en une ci-dessus.');
+        } else {
           setMonitorStatus('connecting', 'Reconnexion...');
         }
       };
