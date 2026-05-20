@@ -49,3 +49,7 @@ Thumbs.db
 # ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/
 .clawhub/
+
+infra/oracle/retry_launch.log
+infra/oracle/instance_response.json
+infra/oracle/instance_id.txt

@@ -27,7 +27,8 @@ while ($attempt -lt $maxAttempts) {
     $attempt++
     Log "Attempt $attempt - launching VM.Standard.A1.Flex..."
 
-    $tmpOut = "$env:TEMP\oci_launch_$attempt.txt"
+    $tmpOut = "$env:TEMP\oci_launch_out_$attempt.txt"
+    $tmpErr = "$env:TEMP\oci_launch_err_$attempt.txt"
     $proc = Start-Process -FilePath $OCI `
         -ArgumentList @(
             "compute", "instance", "launch",
@@ -44,26 +45,32 @@ while ($attempt -lt $maxAttempts) {
             "--hostname-label", "notiftk"
         ) `
         -RedirectStandardOutput $tmpOut `
+        -RedirectStandardError $tmpErr `
         -Wait -PassThru -NoNewWindow
 
-    $output = if (Test-Path $tmpOut) { Get-Content $tmpOut -Raw } else { "" }
+    $stdout = if (Test-Path $tmpOut) { Get-Content $tmpOut -Raw } else { "" }
+    $stderr = if (Test-Path $tmpErr) { Get-Content $tmpErr -Raw } else { "" }
+    $output = "$stdout$stderr"
 
-    if ($output -match '"lifecycle_state"') {
+    if ($stdout -match '"lifecycle_state"') {
         Log "SUCCESS! Instance created."
-        Log $output
-        $output | Out-File -FilePath "$PSScriptRoot\instance_response.json" -Encoding UTF8
+        $stdout | Out-File -FilePath "$PSScriptRoot\instance_response.json" -Encoding UTF8
         Log "Full response saved to infra/oracle/instance_response.json"
         break
     }
-    elseif ($output -match "Out of host capacity" -or $proc.ExitCode -eq 1) {
-        $errSnip = $output.Substring(0, [Math]::Min(200, $output.Length))
-        Log "  -> Capacity/error: $errSnip"
-        Log "  -> Retrying in 90s..."
+    elseif ($output -match "Out of host capacity") {
+        Log "  -> No ARM capacity. Retrying in 90s..."
         Start-Sleep -Seconds 90
     }
+    elseif ($output -match "TooManyRequests") {
+        Log "  -> Rate limited. Waiting 120s..."
+        Start-Sleep -Seconds 120
+    }
     else {
-        Log "  -> Unknown result (exit $($proc.ExitCode)). Retrying in 60s..."
-        Start-Sleep -Seconds 60
+        $snippet = $output.Substring(0, [Math]::Min(300, $output.Length))
+        Log "  -> Exit $($proc.ExitCode): $snippet"
+        Log "  -> Retrying in 90s..."
+        Start-Sleep -Seconds 90
     }
 }
 
