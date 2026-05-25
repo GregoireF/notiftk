@@ -1,6 +1,7 @@
 # Version control
 .git
 .gitignore
+.gitattributes
 
 # Python
 __pycache__/
@@ -23,6 +24,9 @@ data/
 
 # Tests — not needed at runtime
 tests/
+
+# Documentation
+docs/
 
 # Tooling
 .pre-commit-config.yaml
