@@ -7,9 +7,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source then register the package so importlib.metadata.version() resolves.
-# --no-deps avoids reinstalling the deps already in the layer above.
+# setuptools is the build backend declared in pyproject.toml; python:3.13-slim
+# does not ship it. --no-deps skips reinstalling runtime deps from the layer above.
 COPY . .
-RUN pip install --no-cache-dir --no-deps .
+RUN pip install --no-cache-dir "setuptools>=68" && pip install --no-cache-dir --no-deps .
 
 EXPOSE 8080
 
