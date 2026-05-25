@@ -435,9 +435,7 @@ class TestSSECap:
         main_module._sse_connections[identity] = 999  # saturate the counter
         try:
             with patch("api.main.SSE_MAX_PER_KEY", 1):
-                r = sync_client.get(
-                    "/api/stream/ninja", headers={"X-Forwarded-For": identity}
-                )
+                r = sync_client.get("/api/stream/ninja", headers={"X-Forwarded-For": identity})
         finally:
             main_module._sse_connections.pop(identity, None)
         assert r.status_code == 429
@@ -476,6 +474,7 @@ class TestDeliveryHistoryEndpoint:
         )
         buf = deque(maxlen=20)
         import time as _time
+
         buf.append(
             __import__("api.webhooks", fromlist=["_DeliveryRecord"])._DeliveryRecord(
                 timestamp=_time.time(), http_status=200, attempt_count=1, success=True
@@ -508,9 +507,7 @@ class TestAdminWatchesEndpoint:
 
     def test_wrong_secret_returns_404(self):
         with patch("api.main.ADMIN_SECRET", self._ADMIN):
-            r = sync_client.get(
-                "/api/admin/watches", headers={"X-Admin-Secret": "wrong"}
-            )
+            r = sync_client.get("/api/admin/watches", headers={"X-Admin-Secret": "wrong"})
         assert r.status_code == 404
 
     def test_correct_secret_returns_all_watches(self):
@@ -526,9 +523,7 @@ class TestAdminWatchesEndpoint:
         )
         try:
             with patch("api.main.ADMIN_SECRET", self._ADMIN):
-                r = sync_client.get(
-                    "/api/admin/watches", headers={"X-Admin-Secret": self._ADMIN}
-                )
+                r = sync_client.get("/api/admin/watches", headers={"X-Admin-Secret": self._ADMIN})
         finally:
             _watchers.pop(watch_id, None)
 
@@ -551,9 +546,7 @@ class TestAdminWatchesEndpoint:
         )
         try:
             with patch("api.main.ADMIN_SECRET", self._ADMIN):
-                r = sync_client.get(
-                    "/api/admin/watches", headers={"X-Admin-Secret": self._ADMIN}
-                )
+                r = sync_client.get("/api/admin/watches", headers={"X-Admin-Secret": self._ADMIN})
         finally:
             _watchers.pop(watch_id, None)
 

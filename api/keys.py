@@ -27,6 +27,7 @@ import threading
 import time
 from pathlib import Path
 
+
 class KeyValidationError(ValueError):
     """Bad input (label too long, invalid expires_in). Maps to HTTP 422."""
 

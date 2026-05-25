@@ -392,7 +392,9 @@ async def test_register_stores_owner_key_hash():
     """Registering with owner_key stores its SHA-256 hash, not the raw key."""
     owner_key = "sk_live_test_owner_key"
     with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
-        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=owner_key)
+        watch_id = await register_webhook(
+            "ninja", "https://a.example.com/hook", owner_key=owner_key
+        )
     expected_hash = hashlib.sha256(owner_key.encode()).hexdigest()
     assert _watchers[watch_id].owner_key_hash == expected_hash
 
@@ -462,7 +464,9 @@ async def test_unregister_admin_bypasses_ownership():
     """Admin path (owner_key=None) can delete any webhook regardless of ownership."""
     owner_key = "sk_live_key_a"
     with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
-        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=owner_key)
+        watch_id = await register_webhook(
+            "ninja", "https://a.example.com/hook", owner_key=owner_key
+        )
 
     result = await unregister_webhook(watch_id, owner_key=None)
     assert result is True
@@ -474,7 +478,9 @@ async def test_unregister_own_webhook_succeeds():
     """A key can delete its own webhook."""
     owner_key = "sk_live_key_a"
     with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
-        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=owner_key)
+        watch_id = await register_webhook(
+            "ninja", "https://a.example.com/hook", owner_key=owner_key
+        )
 
     result = await unregister_webhook(watch_id, owner_key=owner_key)
     assert result is True

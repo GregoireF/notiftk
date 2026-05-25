@@ -170,12 +170,31 @@ class _JsonFormatter(logging.Formatter):
     passed to the logger call (e.g. logger.info("...", extra={"username": "ninja"})).
     """
 
-    _SKIP = frozenset({
-        "args", "created", "exc_info", "exc_text", "filename", "funcName",
-        "levelno", "lineno", "message", "module", "msecs", "msg", "name",
-        "pathname", "process", "processName", "relativeCreated", "stack_info",
-        "taskName", "thread", "threadName",
-    })
+    _SKIP = frozenset(
+        {
+            "args",
+            "created",
+            "exc_info",
+            "exc_text",
+            "filename",
+            "funcName",
+            "levelno",
+            "lineno",
+            "message",
+            "module",
+            "msecs",
+            "msg",
+            "name",
+            "pathname",
+            "process",
+            "processName",
+            "relativeCreated",
+            "stack_info",
+            "taskName",
+            "thread",
+            "threadName",
+        }
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         record.message = record.getMessage()
@@ -463,7 +482,9 @@ async def live_stream_multi(
         uname = u.lower()
         _sse_per_username[uname] = _sse_per_username.get(uname, 0) + 1
     return StreamingResponse(
-        _sse_generator_multi(usernames, identity), media_type="text/event-stream", headers=_SSE_HEADERS
+        _sse_generator_multi(usernames, identity),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 

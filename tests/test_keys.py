@@ -231,6 +231,7 @@ class TestKeyExpiration:
         body = r.json()
         assert body["expires_at"] is not None
         import time
+
         assert body["expires_at"] > time.time()
 
     def test_no_expires_in_returns_null_expires_at(self):

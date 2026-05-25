@@ -68,8 +68,8 @@ logger = logging.getLogger(__name__)
 
 DISPATCH_TIMEOUT = 10
 MAX_DISPATCH_FAILURES = 5
-DISPATCH_MAX_ATTEMPTS = 3   # per-event retry attempts before counting as a failure
-DISPATCH_BACKOFF_BASE = 1   # seconds — waits 1s then 2s between retries
+DISPATCH_MAX_ATTEMPTS = 3  # per-event retry attempts before counting as a failure
+DISPATCH_BACKOFF_BASE = 1  # seconds — waits 1s then 2s between retries
 MAX_WEBHOOKS_TOTAL = int(os.getenv("MAX_WEBHOOKS", "100"))
 MAX_WEBHOOKS_PER_USER = int(os.getenv("MAX_WEBHOOKS_PER_USER", "5"))
 
@@ -170,16 +170,20 @@ def _assert_not_ssrf(url: str) -> None:
 # ── Delivery history ──────────────────────────────────────────────────────────
 
 
-def _record_delivery(watch_id: str, http_status: int | None, attempt_count: int, success: bool) -> None:
+def _record_delivery(
+    watch_id: str, http_status: int | None, attempt_count: int, success: bool
+) -> None:
     buf = _delivery_history.get(watch_id)
     if buf is None:
         return
-    buf.append(_DeliveryRecord(
-        timestamp=time.time(),
-        http_status=http_status,
-        attempt_count=attempt_count,
-        success=success,
-    ))
+    buf.append(
+        _DeliveryRecord(
+            timestamp=time.time(),
+            http_status=http_status,
+            attempt_count=attempt_count,
+            success=success,
+        )
+    )
 
 
 def get_delivery_history(watch_id: str) -> list[dict] | None:
@@ -390,7 +394,7 @@ async def _dispatch_with_retry(watcher: _Watcher, status: LiveStatus) -> bool:
             _record_delivery(watcher.watch_id, http_status, attempt + 1, True)
             return True
         if attempt < DISPATCH_MAX_ATTEMPTS - 1:
-            await asyncio.sleep(DISPATCH_BACKOFF_BASE * (2 ** attempt))
+            await asyncio.sleep(DISPATCH_BACKOFF_BASE * (2**attempt))
     _record_delivery(watcher.watch_id, last_http_status, DISPATCH_MAX_ATTEMPTS, False)
     return False
 
