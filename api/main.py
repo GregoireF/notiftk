@@ -25,6 +25,10 @@ Five complementary endpoints:
   GET /api/watches
       List all active webhooks (watch_id, username, callback_url).
 
+  GET /api/watch/{watch_id}/deliveries
+      Last 20 delivery records for a webhook (timestamp, http_status,
+      attempt_count, success). Cleared on server restart or unregister.
+
 Authentication (when API_KEYS env var is set):
   REST / webhooks → X-API-Key: sk_live_abc123
   SSE             → /api/stream/ninja?key=sk_live_abc123
@@ -78,6 +82,7 @@ from .keys import (
 )
 from .models import (
     AdminKeyResponse,
+    DeliveryRecord,
     ErrorResponse,
     HealthResponse,
     KeyResponse,
@@ -89,6 +94,7 @@ from .webhooks import (
     register_webhook,
     unregister_webhook,
     list_webhooks,
+    get_delivery_history,
     restore_webhooks,
     shutdown_webhooks,
     WebhookLimitExceeded,
@@ -210,7 +216,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="NotiTFK",
     description=__doc__,
-    version="0.4.0",
+    version="0.4.2",
     lifespan=lifespan,
 )
 
@@ -623,6 +629,37 @@ async def watches():
         WatchResponse(watch_id=w.watch_id, username=w.username, callback_url=w.callback_url)
         for w in list_webhooks()
     ]
+
+
+@app.get(
+    "/api/watch/{watch_id}/deliveries",
+    response_model=list[DeliveryRecord],
+    responses={
+        401: {"description": "Missing or invalid API key"},
+        404: {"description": "Watch ID not found"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Webhook delivery history",
+    tags=["Webhooks"],
+    dependencies=[_auth],
+)
+async def watch_deliveries(watch_id: str):
+    """
+    Return the last 20 delivery attempts for *watch_id*, most recent first.
+
+    Each record includes:
+    - `timestamp` — Unix timestamp of the delivery attempt.
+    - `http_status` — HTTP status code returned by the receiver, or `null` on network error.
+    - `attempt_count` — number of attempts made (1–3, counting retries).
+    - `success` — `true` if any attempt got a 2xx response.
+
+    Deliveries are kept in memory only — they reset on server restart and are
+    removed when the webhook is unregistered.
+    """
+    records = get_delivery_history(watch_id)
+    if records is None:
+        raise HTTPException(status_code=404, detail=f"watch_id '{watch_id}' not found.")
+    return [DeliveryRecord(**r) for r in records]
 
 
 # ── SSE generators ────────────────────────────────────────────────────────────

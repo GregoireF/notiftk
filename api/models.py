@@ -48,6 +48,13 @@ class AdminKeyResponse(BaseModel):
     expires_at: float | None = None
 
 
+class DeliveryRecord(BaseModel):
+    timestamp: float
+    http_status: int | None = None
+    attempt_count: int
+    success: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str

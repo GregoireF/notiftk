@@ -19,6 +19,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ---
 
+## [0.4.2] — 2026-05-25
+
+### Added
+
+- **Webhook delivery history** — `GET /api/watch/{watch_id}/deliveries` returns the last 20 delivery attempts for a webhook, most-recent first. Each record includes `timestamp`, `http_status` (HTTP status code or `null` on network error), `attempt_count` (1–3, counting retries), and `success`. History is in-memory: it resets on server restart and is cleared when the webhook is unregistered.
+- **`DeliveryRecord` Pydantic model** — added to `api/models.py` for the new endpoint's response schema.
+
+### Changed
+
+- **`_dispatch` return type** — now returns `tuple[bool, int | None]` instead of `bool`, exposing the HTTP status code for history recording.
+- **`_dispatch_with_retry` records outcome** — calls `_record_delivery` on every final outcome (success on first attempt, success after retry, or all attempts exhausted), so the history always reflects the real delivery effort.
+- **Version bump** — `app.version` → `0.4.2`.
+
+---
+
 ## [0.4.0] — 2026-05-25
 
 ### Added

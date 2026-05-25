@@ -31,6 +31,7 @@ Public API:
   register_webhook(username, callback_url, secret=None)  → watch_id (str)
   unregister_webhook(watch_id)                           → bool (True = removed)
   list_webhooks()                                        → list[_Watcher]
+  get_delivery_history(watch_id)                         → list[dict] | None
 
 Exceptions:
   WebhookLimitExceeded  — global or per-user cap reached  → HTTP 429
@@ -44,7 +45,9 @@ import ipaddress
 import logging
 import os
 import sqlite3
+import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -62,6 +65,8 @@ DISPATCH_MAX_ATTEMPTS = 3   # per-event retry attempts before counting as a fail
 DISPATCH_BACKOFF_BASE = 1   # seconds — waits 1s then 2s between retries
 MAX_WEBHOOKS_TOTAL = int(os.getenv("MAX_WEBHOOKS", "100"))
 MAX_WEBHOOKS_PER_USER = int(os.getenv("MAX_WEBHOOKS_PER_USER", "5"))
+
+_MAX_DELIVERY_HISTORY = 20
 
 _DB_PATH = Path(
     os.getenv("WEBHOOKS_DB", str(Path(__file__).parent.parent / "data" / "webhooks.db"))
@@ -108,8 +113,19 @@ class _Watcher:
     task: asyncio.Task | None = field(default=None, repr=False)
 
 
+@dataclass
+class _DeliveryRecord:
+    timestamp: float
+    http_status: int | None
+    attempt_count: int
+    success: bool
+
+
 # watch_id → _Watcher
 _watchers: dict[str, _Watcher] = {}
+
+# watch_id → ring buffer of last _MAX_DELIVERY_HISTORY delivery records
+_delivery_history: dict[str, deque[_DeliveryRecord]] = {}
 
 
 # ── SSRF guard ────────────────────────────────────────────────────────────────
@@ -137,6 +153,40 @@ def _assert_not_ssrf(url: str) -> None:
         # "does not appear to be an IPv4 or IPv6 address" — it's a hostname, not an IP.
         if isinstance(exc, WebhookURLError):
             raise
+
+
+# ── Delivery history ──────────────────────────────────────────────────────────
+
+
+def _record_delivery(watch_id: str, http_status: int | None, attempt_count: int, success: bool) -> None:
+    buf = _delivery_history.get(watch_id)
+    if buf is None:
+        return
+    buf.append(_DeliveryRecord(
+        timestamp=time.time(),
+        http_status=http_status,
+        attempt_count=attempt_count,
+        success=success,
+    ))
+
+
+def get_delivery_history(watch_id: str) -> list[dict] | None:
+    """
+    Return delivery records for a watch_id in reverse-chronological order.
+    Returns None if the watch_id is unknown (allows 404 vs empty list distinction).
+    """
+    buf = _delivery_history.get(watch_id)
+    if buf is None:
+        return None
+    return [
+        {
+            "timestamp": r.timestamp,
+            "http_status": r.http_status,
+            "attempt_count": r.attempt_count,
+            "success": r.success,
+        }
+        for r in reversed(buf)
+    ]
 
 
 # ── SQLite persistence ────────────────────────────────────────────────────────
@@ -190,6 +240,7 @@ async def restore_webhooks() -> None:
         )
         watcher.task = asyncio.create_task(_poll_loop(watcher), name=f"webhook-{watch_id[:8]}")
         _watchers[watch_id] = watcher
+        _delivery_history[watch_id] = deque(maxlen=_MAX_DELIVERY_HISTORY)
     if rows:
         logger.info("Restored %d webhook(s) from database.", len(rows))
 
@@ -228,6 +279,7 @@ async def register_webhook(username: str, callback_url: str, secret: str | None 
     watcher = _Watcher(watch_id=watch_id, username=uname, callback_url=callback_url, secret=secret)
     watcher.task = asyncio.create_task(_poll_loop(watcher), name=f"webhook-{watch_id[:8]}")
     _watchers[watch_id] = watcher
+    _delivery_history[watch_id] = deque(maxlen=_MAX_DELIVERY_HISTORY)
     await asyncio.to_thread(_db_insert_sync, watch_id, uname, callback_url, secret)
     logger.info("Registered webhook %s for '%s' → %s", watch_id[:8], uname, callback_url)
     return watch_id
@@ -240,6 +292,7 @@ async def unregister_webhook(watch_id: str) -> bool:
         return False
     if watcher.task and not watcher.task.done():
         watcher.task.cancel()
+    _delivery_history.pop(watch_id, None)
     await asyncio.to_thread(_db_delete_sync, watch_id)
     logger.info("Unregistered webhook %s ('%s').", watch_id[:8], watcher.username)
     return True
@@ -266,11 +319,16 @@ async def _dispatch_with_retry(watcher: _Watcher, status: LiveStatus) -> bool:
     Backoff schedule: immediate → 1 s → 2 s (3 attempts total).
     The failure counter in _poll_loop only increments when all attempts fail.
     """
+    last_http_status: int | None = None
     for attempt in range(DISPATCH_MAX_ATTEMPTS):
-        if await _dispatch(watcher, status):
+        ok, http_status = await _dispatch(watcher, status)
+        last_http_status = http_status
+        if ok:
+            _record_delivery(watcher.watch_id, http_status, attempt + 1, True)
             return True
         if attempt < DISPATCH_MAX_ATTEMPTS - 1:
             await asyncio.sleep(DISPATCH_BACKOFF_BASE * (2 ** attempt))
+    _record_delivery(watcher.watch_id, last_http_status, DISPATCH_MAX_ATTEMPTS, False)
     return False
 
 
@@ -320,8 +378,8 @@ async def _poll_loop(watcher: _Watcher) -> None:
         await asyncio.sleep(POLL_INTERVAL)
 
 
-async def _dispatch(watcher: _Watcher, status: LiveStatus) -> bool:
-    """POST status JSON to the callback URL. Returns True on 2xx, False otherwise."""
+async def _dispatch(watcher: _Watcher, status: LiveStatus) -> tuple[bool, int | None]:
+    """POST status JSON to the callback URL. Returns (success, http_status_or_None)."""
     payload = status.model_dump_json().encode()
     headers = {"Content-Type": "application/json"}
 
@@ -332,6 +390,6 @@ async def _dispatch(watcher: _Watcher, status: LiveStatus) -> bool:
     try:
         async with httpx.AsyncClient(timeout=DISPATCH_TIMEOUT) as client:
             resp = await client.post(watcher.callback_url, content=payload, headers=headers)
-            return resp.is_success
+            return resp.is_success, resp.status_code
     except Exception:
-        return False
+        return False, None
