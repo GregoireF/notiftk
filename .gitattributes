@@ -1,0 +1,12 @@
+# Normalize line endings to LF in the repository.
+# Developers on Windows get CRLF in their working tree (autocrlf),
+# but the stored blobs always use LF so CI (Linux) sees consistent files.
+
+* text=auto eol=lf
+
+# Explicitly mark binary files so git never mangles them.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.db   binary
