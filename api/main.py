@@ -73,17 +73,10 @@ import re
 import time
 import tomllib
 from contextlib import asynccontextmanager
-from importlib.metadata import version as _pkg_version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Annotated
-
-
-def _read_version() -> str:
-    try:
-        return _pkg_version("notiftk")
-    except PackageNotFoundError:
-        with open(Path(__file__).parent.parent / "pyproject.toml", "rb") as _f:
-            return tomllib.load(_f)["project"]["version"]
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -129,6 +122,15 @@ from .tiktok import (
     CACHE_TTL,
     POLL_INTERVAL,
 )
+
+
+def _read_version() -> str:
+    try:
+        return _pkg_version("notiftk")
+    except PackageNotFoundError:
+        with open(Path(__file__).parent.parent / "pyproject.toml", "rb") as _f:
+            return str(tomllib.load(_f)["project"]["version"])
+
 
 _START_TIME = time.monotonic()
 
