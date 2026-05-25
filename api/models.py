@@ -58,10 +58,11 @@ class DeliveryRecord(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+    timestamp: float
+    uptime_seconds: float
     auth_enabled: bool
     cache_ttl_seconds: int
     poll_interval_seconds: int
     active_webhooks: int
     active_sse_connections: int = 0
-    uptime_seconds: float
     db_ok: bool

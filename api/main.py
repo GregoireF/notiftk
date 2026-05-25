@@ -51,9 +51,15 @@ Environment variables:
     REQUIRE_API_KEY       Set to "true" to enforce auth even with no keys.
     RATE_LIMIT_REQUESTS   Max requests per window per key/IP (default: 120)
     RATE_LIMIT_WINDOW     Window size in seconds (default: 60)
+    KEY_INVITE_CODE       When set, POST /api/keys requires ?invite=<code>.
     WEBHOOKS_DB           SQLite path for webhook persistence (default: data/webhooks.db)
     MAX_WEBHOOKS          Global webhook cap (default: 100)
     MAX_WEBHOOKS_PER_USER Per-username webhook cap (default: 5)
+    SSE_MAX_PER_KEY       Max concurrent SSE connections per key/IP (default: 20)
+    SSE_MAX_PER_USERNAME  Max concurrent SSE connections per username (default: 50)
+    LOG_FORMAT            "json" for structured logs, "text" for human-readable (default)
+    LOG_LEVEL             Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+    CORS_ORIGINS          Comma-separated allowed origins (default: *)
 """
 
 import asyncio
@@ -275,12 +281,13 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         version=app.version,
+        timestamp=time.time(),
+        uptime_seconds=round(time.monotonic() - _START_TIME, 1),
         auth_enabled=AUTH_ENABLED,
         cache_ttl_seconds=CACHE_TTL,
         poll_interval_seconds=POLL_INTERVAL,
         active_webhooks=len(list_webhooks()),
         active_sse_connections=sum(_sse_connections.values()),
-        uptime_seconds=round(time.monotonic() - _START_TIME, 1),
         db_ok=await asyncio.to_thread(_db_ok),
     )
 

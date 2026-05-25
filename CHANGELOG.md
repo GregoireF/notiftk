@@ -1,19 +1,5 @@
 # Changelog
 
-## [0.4.1] — 2026-05-25
-
-### Added
-
-- **SSE connection cap** — `SSE_MAX_PER_KEY` (default 20) and `SSE_MAX_PER_USERNAME` (default 50) env vars. Opening more simultaneous SSE connections than the cap returns HTTP 429. Enforced per API key (or per IP when auth is disabled). Counters are tracked in `_sse_connections` and `_sse_per_username`; decremented atomically in the generator's `try/finally` so a client disconnect always frees the slot.
-- **`active_sse_connections`** added to `GET /health` — total open SSE connections across all keys, at zero cost (sum of the in-memory counter dict).
-- **Structured JSON logging** — set `LOG_FORMAT=json` to switch to newline-delimited JSON (`ts`, `level`, `logger`, `msg`, optional `exc` and any `extra=` fields). Implemented as a zero-dependency custom `logging.Formatter`. Default remains human-readable text (`LOG_FORMAT=text`). Works whether uvicorn has pre-installed handlers or not (reconfigures existing handlers rather than duplicating them).
-
-### Changed
-
-- `_sse_generator` and `_sse_generator_multi` now accept an `identity` parameter (API key or client IP) and wrap their bodies in `try/finally` for connection accounting.
-- `live_stream` and `live_stream_multi` route handlers no longer use `dependencies=[_auth]` in the decorator; the key is now injected directly as `_key: str | None = _auth` so the handler can use it for connection tracking.
-- `_configure_logging` now explicitly reconfigures existing log handlers (e.g. uvicorn's) instead of relying on `logging.basicConfig`'s idempotent no-op.
-
 All notable changes to NotiTFK are documented here.  
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/).
 
@@ -30,7 +16,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 - **`_dispatch` return type** — now returns `tuple[bool, int | None]` instead of `bool`, exposing the HTTP status code for history recording.
 - **`_dispatch_with_retry` records outcome** — calls `_record_delivery` on every final outcome (success on first attempt, success after retry, or all attempts exhausted), so the history always reflects the real delivery effort.
+- **`GET /health` gains `timestamp`** — Unix float of when the probe was evaluated. Field order is now: `status`, `version`, `timestamp`, `uptime_seconds`, then config fields, then counters, then `db_ok`. Makes it consistent with `DeliveryRecord.timestamp` and easy to detect stale cached health responses.
+- **Module docstring env-var table** — now lists all variables including `KEY_INVITE_CODE`, `SSE_MAX_PER_KEY`, `SSE_MAX_PER_USERNAME`, `LOG_FORMAT`, `LOG_LEVEL`, `CORS_ORIGINS`.
 - **Version bump** — `app.version` → `0.4.2`.
+
+---
+
+## [0.4.1] — 2026-05-25
+
+### Added
+
+- **SSE connection cap** — `SSE_MAX_PER_KEY` (default 20) and `SSE_MAX_PER_USERNAME` (default 50) env vars. Opening more simultaneous SSE connections than the cap returns HTTP 429. Enforced per API key (or per IP when auth is disabled). Counters are tracked in `_sse_connections` and `_sse_per_username`; decremented atomically in the generator's `try/finally` so a client disconnect always frees the slot.
+- **`active_sse_connections`** added to `GET /health` — total open SSE connections across all keys, at zero cost (sum of the in-memory counter dict).
+- **Structured JSON logging** — set `LOG_FORMAT=json` to switch to newline-delimited JSON (`ts`, `level`, `logger`, `msg`, optional `exc` and any `extra=` fields). Implemented as a zero-dependency custom `logging.Formatter`. Default remains human-readable text. Works whether uvicorn has pre-installed handlers or not (reconfigures existing handlers rather than duplicating them).
+
+### Changed
+
+- `_sse_generator` and `_sse_generator_multi` now accept an `identity` parameter (API key or client IP) and wrap their bodies in `try/finally` for connection accounting.
+- `live_stream` and `live_stream_multi` route handlers no longer use `dependencies=[_auth]` in the decorator; the key is now injected directly as `_key: str | None = _auth` so the handler can use it for connection tracking.
+- `_configure_logging` now explicitly reconfigures existing log handlers (e.g. uvicorn's) instead of relying on `logging.basicConfig`'s idempotent no-op.
 
 ---
 
