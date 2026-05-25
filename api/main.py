@@ -120,14 +120,81 @@ _SSE_HEADERS = {
 
 _MAX_USERS = 10
 
+SSE_MAX_PER_KEY = int(os.getenv("SSE_MAX_PER_KEY", "20"))
+SSE_MAX_PER_USERNAME = int(os.getenv("SSE_MAX_PER_USERNAME", "50"))
+
+# identity (API key or client IP) → open SSE connection count
+_sse_connections: dict[str, int] = {}
+# lowercase username → open SSE connection count (across all keys)
+_sse_per_username: dict[str, int] = {}
+
+
+class _JsonFormatter(logging.Formatter):
+    """
+    Zero-dependency JSON log formatter. Activated via LOG_FORMAT=json env var.
+
+    Why not python-json-logger?
+    Adding a dependency for a single formatter is not worth the extra pin in
+    requirements.txt. The stdlib logging.Formatter gives us everything we need.
+
+    Output fields: ts, level, logger, msg, exc (when present), + any extra= kwargs
+    passed to the logger call (e.g. logger.info("...", extra={"username": "ninja"})).
+    """
+
+    _SKIP = frozenset({
+        "args", "created", "exc_info", "exc_text", "filename", "funcName",
+        "levelno", "lineno", "message", "module", "msecs", "msg", "name",
+        "pathname", "process", "processName", "relativeCreated", "stack_info",
+        "taskName", "thread", "threadName",
+    })
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.message = record.getMessage()
+        payload: dict = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.message,
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        for k, v in vars(record).items():
+            if k not in self._SKIP:
+                payload[k] = v
+        return json.dumps(payload, default=str)
+
 
 def _configure_logging() -> None:
+    """
+    Configure the root logger once at startup.
+
+    LOG_FORMAT=json  → structured JSON (one object per line) — ideal for
+                       journald / Loki / any log aggregator.
+    LOG_FORMAT=text  → human-readable (default, good for local dev).
+
+    Works whether or not uvicorn has already added handlers (reconfigures
+    existing handlers rather than duplicating them via basicConfig).
+    """
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    )
+    level = getattr(logging, log_level, logging.INFO)
+    root = logging.root
+    root.setLevel(level)
+
+    if os.getenv("LOG_FORMAT", "").lower() == "json":
+        formatter: logging.Formatter = _JsonFormatter()
+    else:
+        formatter = logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s — %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+
+    if root.handlers:
+        for h in root.handlers:
+            h.setFormatter(formatter)
+    else:
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
 
 
 @asynccontextmanager
@@ -206,6 +273,7 @@ async def health() -> HealthResponse:
         cache_ttl_seconds=CACHE_TTL,
         poll_interval_seconds=POLL_INTERVAL,
         active_webhooks=len(list_webhooks()),
+        active_sse_connections=sum(_sse_connections.values()),
         uptime_seconds=round(time.monotonic() - _START_TIME, 1),
         db_ok=await asyncio.to_thread(_db_ok),
     )
@@ -263,11 +331,10 @@ async def live_status(username: str):
         },
         401: {"description": "Missing or invalid API key"},
         422: {"description": "Invalid username"},
-        429: {"description": "Rate limit exceeded"},
+        429: {"description": "Rate limit exceeded or SSE connection cap reached"},
     },
-    dependencies=[_auth],
 )
-async def live_stream(username: str):
+async def live_stream(username: str, request: Request, _key: str | None = _auth):
     """
     Opens a persistent SSE connection for *username*. Events are emitted only
     when `is_live` changes, not on every poll.
@@ -288,8 +355,22 @@ async def live_stream(username: str):
     ```
     """
     _validate_username(username)
+    identity = _key or _client_ip(request)
+    uname = username.lower()
+    if _sse_connections.get(identity, 0) >= SSE_MAX_PER_KEY:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum {SSE_MAX_PER_KEY} simultaneous SSE connections per key.",
+        )
+    if _sse_per_username.get(uname, 0) >= SSE_MAX_PER_USERNAME:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum {SSE_MAX_PER_USERNAME} simultaneous SSE connections for @{username}.",
+        )
+    _sse_connections[identity] = _sse_connections.get(identity, 0) + 1
+    _sse_per_username[uname] = _sse_per_username.get(uname, 0) + 1
     return StreamingResponse(
-        _sse_generator(username), media_type="text/event-stream", headers=_SSE_HEADERS
+        _sse_generator(username, identity), media_type="text/event-stream", headers=_SSE_HEADERS
     )
 
 
@@ -307,15 +388,16 @@ async def live_stream(username: str):
         },
         401: {"description": "Missing or invalid API key"},
         422: {"description": "Invalid username or too many users requested"},
-        429: {"description": "Rate limit exceeded"},
+        429: {"description": "Rate limit exceeded or SSE connection cap reached"},
     },
-    dependencies=[_auth],
 )
 async def live_stream_multi(
     users: Annotated[
         str,
         Query(description=f"Comma-separated TikTok usernames (max {_MAX_USERS})"),
     ],
+    request: Request,
+    _key: str | None = _auth,
 ):
     """
     Single SSE connection tracking multiple usernames simultaneously.
@@ -334,8 +416,24 @@ async def live_stream_multi(
         raise HTTPException(status_code=422, detail=f"Maximum {_MAX_USERS} usernames per request.")
     for u in usernames:
         _validate_username(u)
+    identity = _key or _client_ip(request)
+    if _sse_connections.get(identity, 0) >= SSE_MAX_PER_KEY:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum {SSE_MAX_PER_KEY} simultaneous SSE connections per key.",
+        )
+    for u in usernames:
+        if _sse_per_username.get(u.lower(), 0) >= SSE_MAX_PER_USERNAME:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Maximum {SSE_MAX_PER_USERNAME} simultaneous SSE connections for @{u}.",
+            )
+    _sse_connections[identity] = _sse_connections.get(identity, 0) + 1
+    for u in usernames:
+        uname = u.lower()
+        _sse_per_username[uname] = _sse_per_username.get(uname, 0) + 1
     return StreamingResponse(
-        _sse_generator_multi(usernames), media_type="text/event-stream", headers=_SSE_HEADERS
+        _sse_generator_multi(usernames, identity), media_type="text/event-stream", headers=_SSE_HEADERS
     )
 
 
@@ -530,7 +628,7 @@ async def watches():
 # ── SSE generators ────────────────────────────────────────────────────────────
 
 
-async def _sse_generator(username: str):
+async def _sse_generator(username: str, identity: str):
     """
     Yields SSE events only when is_live changes (plus periodic heartbeats).
 
@@ -539,39 +637,50 @@ async def _sse_generator(username: str):
       - `: heartbeat`     comment every HEARTBEAT_EVERY polls (keeps proxies from timing out)
       - Fatal error:      `data: {"error": ...}` then generator stops
       - Transient error:  `data: {"error": ..., "transient": true}` then keep going
+
+    The outer try/finally ensures _sse_connections and _sse_per_username are
+    decremented even on client disconnect, server error, or CancelledError.
     """
     last_live: bool | None = None
     had_error = False
     poll_count = 0
+    uname = username.lower()
+    try:
+        while True:
+            try:
+                status = await get_live_status_sse(username)
+                poll_count += 1
+                changed = last_live is None or status.is_live != last_live
+                if changed or had_error:
+                    yield f"data: {status.model_dump_json()}\n\n"
+                    last_live = status.is_live
+                    had_error = False
+                elif poll_count % HEARTBEAT_EVERY == 0:
+                    yield ": heartbeat\n\n"
 
-    while True:
-        try:
-            status = await get_live_status_sse(username)
-            poll_count += 1
-            changed = last_live is None or status.is_live != last_live
-            if changed or had_error:
-                yield f"data: {status.model_dump_json()}\n\n"
-                last_live = status.is_live
-                had_error = False
-            elif poll_count % HEARTBEAT_EVERY == 0:
-                yield ": heartbeat\n\n"
+            except TikTokUserNotFound as e:
+                yield f"data: {json.dumps({'username': username, 'error': str(e)})}\n\n"
+                return
 
-        except TikTokUserNotFound as e:
-            yield f"data: {json.dumps({'username': username, 'error': str(e)})}\n\n"
-            return
+            except TikTokAPIError as e:
+                had_error = True
+                poll_count += 1
+                yield f"data: {json.dumps({'username': username, 'error': str(e), 'transient': True})}\n\n"
 
-        except TikTokAPIError as e:
-            had_error = True
-            poll_count += 1
-            yield f"data: {json.dumps({'username': username, 'error': str(e), 'transient': True})}\n\n"
+            except asyncio.CancelledError:
+                return
 
-        except asyncio.CancelledError:
-            return
-
-        await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(POLL_INTERVAL)
+    finally:
+        _sse_connections[identity] = max(0, _sse_connections.get(identity, 0) - 1)
+        if not _sse_connections.get(identity):
+            _sse_connections.pop(identity, None)
+        _sse_per_username[uname] = max(0, _sse_per_username.get(uname, 0) - 1)
+        if not _sse_per_username.get(uname):
+            _sse_per_username.pop(uname, None)
 
 
-async def _sse_generator_multi(usernames: list[str]):
+async def _sse_generator_multi(usernames: list[str], identity: str):
     """
     Yields SSE events for multiple usernames over a single connection.
 
@@ -581,7 +690,11 @@ async def _sse_generator_multi(usernames: list[str]):
     One asyncio.Queue is shared across per-user tasks. The generator exits
     automatically when all tasks have finished (all users permanently errored).
     Uses put_nowait() to remain safe inside task finally-blocks after cancellation.
+
+    The outer try/finally decrements _sse_connections (once for the whole
+    connection) and _sse_per_username for each watched username.
     """
+    lower = [u.lower() for u in usernames]
     queue: asyncio.Queue = asyncio.Queue()
     last_live: dict[str, bool | None] = {u: None for u in usernames}
     had_error: dict[str, bool] = {u: False for u in usernames}
@@ -622,13 +735,22 @@ async def _sse_generator_multi(usernames: list[str]):
 
     tasks = [asyncio.create_task(poll_one(u)) for u in usernames]
     try:
-        while True:
-            item = await queue.get()
-            if item is _MULTI_DONE:
-                return
-            yield item
-    except asyncio.CancelledError:
-        pass
+        try:
+            while True:
+                item = await queue.get()
+                if item is _MULTI_DONE:
+                    return
+                yield item
+        except asyncio.CancelledError:
+            pass
+        finally:
+            for t in tasks:
+                t.cancel()
     finally:
-        for t in tasks:
-            t.cancel()
+        _sse_connections[identity] = max(0, _sse_connections.get(identity, 0) - 1)
+        if not _sse_connections.get(identity):
+            _sse_connections.pop(identity, None)
+        for uname in lower:
+            _sse_per_username[uname] = max(0, _sse_per_username.get(uname, 0) - 1)
+            if not _sse_per_username.get(uname):
+                _sse_per_username.pop(uname, None)

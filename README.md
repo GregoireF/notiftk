@@ -603,6 +603,10 @@ Sans `API_KEYS`, l'auth est désactivée. Le **rate limiting par IP est toujours
 | `MAX_WEBHOOKS_PER_USER` | `5` | Cap par username |
 | `MAX_KEYS` | `1000` | Cap global de clés self-service actives |
 | `MAX_KEYS_PER_IP` | `3` | Max clés générées par IP toutes les 24h |
+| `SSE_MAX_PER_KEY` | `20` | Max connexions SSE simultanées par clé (ou par IP si auth désactivée) |
+| `SSE_MAX_PER_USERNAME` | `50` | Max connexions SSE simultanées sur un même username |
+| `LOG_FORMAT` | `text` | Format des logs : `text` (humain) ou `json` (structuré pour Loki/journald) |
+| `LOG_LEVEL` | `INFO` | Niveau de log : `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ---
 
