@@ -47,6 +47,12 @@ TIKTOK_TIMEOUT = 10  # seconds before giving up on a TikTok API call
 _cache: dict[str, tuple[LiveStatus, float]] = {}
 _sse_cache: dict[str, tuple[LiveStatus, float]] = {}
 
+# One lock per username: prevents the thundering-herd where N concurrent SSE
+# clients all find the cache stale simultaneously and all fire a TikTok call.
+# asyncio.Lock is not thread-safe, but this module is only ever used from the
+# asyncio event loop, so a plain dict is safe here.
+_sse_locks: dict[str, asyncio.Lock] = {}
+
 
 class TikTokUserNotFound(Exception):
     """User doesn't exist on TikTok or has never gone live."""
@@ -86,6 +92,10 @@ async def get_live_status_sse(username: str) -> LiveStatus:
     is polled at most once per POLL_INTERVAL regardless of subscriber count.
     Also updates _cache so REST callers benefit from fresh SSE data.
 
+    Uses a per-username asyncio.Lock (double-checked locking) so that when N
+    clients are all subscribed to the same username and the cache expires, only
+    one of them fires a TikTok call — the others wait and then hit the cache.
+
     Best for: SSE streaming generators.
 
     Raises:
@@ -93,17 +103,25 @@ async def get_live_status_sse(username: str) -> LiveStatus:
         TikTokAPIError: Unexpected failure communicating with TikTok.
     """
     cache_key = username.lower()
-    cached = _sse_cache.get(cache_key)
-    if cached is not None:
-        status, ts = cached
-        if time.monotonic() - ts < POLL_INTERVAL:
-            return status
 
-    result = await _fetch_live_status(cache_key)
-    now = time.monotonic()
-    _sse_cache[cache_key] = (result, now)
-    _cache[cache_key] = (result, now)
-    return result
+    # Fast path — no await, no lock contention when cache is warm.
+    cached = _sse_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[1] < POLL_INTERVAL:
+        return cached[0]
+
+    lock = _sse_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        # Re-check inside the lock: the coroutine that lost the race should
+        # return the result written by the winner rather than fetching again.
+        cached = _sse_cache.get(cache_key)
+        if cached is not None and time.monotonic() - cached[1] < POLL_INTERVAL:
+            return cached[0]
+
+        result = await _fetch_live_status(cache_key)
+        now = time.monotonic()
+        _sse_cache[cache_key] = (result, now)
+        _cache[cache_key] = (result, now)
+        return result
 
 
 async def _fetch_live_status(username: str) -> LiveStatus:

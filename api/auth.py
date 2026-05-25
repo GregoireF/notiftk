@@ -23,6 +23,7 @@ Public API:
   RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW — tunable constants
 """
 
+import asyncio
 import os
 import time
 from collections import defaultdict
@@ -106,7 +107,16 @@ async def api_key_dependency(
     if AUTH_ENABLED:
         from .keys import is_db_key_valid  # local import avoids circular dependency at module load
 
-        if not key or (key not in VALID_KEYS and not is_db_key_valid(key)):
+        if not key:
+            raise HTTPException(
+                status_code=401,
+                detail="Missing or invalid API key. Pass X-API-Key header or ?key= query param.",
+                headers={"WWW-Authenticate": "ApiKey"},
+            )
+        # Short-circuit on env-var keys (no I/O); fall back to DB lookup wrapped
+        # in asyncio.to_thread so the SQLite read never blocks the event loop.
+        valid = key in VALID_KEYS or await asyncio.to_thread(is_db_key_valid, key)
+        if not valid:
             raise HTTPException(
                 status_code=401,
                 detail="Missing or invalid API key. Pass X-API-Key header or ?key= query param.",

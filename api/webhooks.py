@@ -58,6 +58,8 @@ logger = logging.getLogger(__name__)
 
 DISPATCH_TIMEOUT = 10
 MAX_DISPATCH_FAILURES = 5
+DISPATCH_MAX_ATTEMPTS = 3   # per-event retry attempts before counting as a failure
+DISPATCH_BACKOFF_BASE = 1   # seconds — waits 1s then 2s between retries
 MAX_WEBHOOKS_TOTAL = int(os.getenv("MAX_WEBHOOKS", "100"))
 MAX_WEBHOOKS_PER_USER = int(os.getenv("MAX_WEBHOOKS_PER_USER", "5"))
 
@@ -251,6 +253,27 @@ def list_webhooks() -> list[_Watcher]:
 # ── Background poll loop ──────────────────────────────────────────────────────
 
 
+async def _dispatch_with_retry(watcher: _Watcher, status: LiveStatus) -> bool:
+    """
+    POST status to the callback URL with exponential backoff on transient failures.
+
+    Why retry here instead of at the poll level?
+    A status change fires once — if the receiver is briefly down (deploy, restart,
+    transient 503) the event would be silently lost without retry. Retrying at the
+    delivery level preserves the event; retrying at the poll level would not re-fire
+    because is_live hasn't changed.
+
+    Backoff schedule: immediate → 1 s → 2 s (3 attempts total).
+    The failure counter in _poll_loop only increments when all attempts fail.
+    """
+    for attempt in range(DISPATCH_MAX_ATTEMPTS):
+        if await _dispatch(watcher, status):
+            return True
+        if attempt < DISPATCH_MAX_ATTEMPTS - 1:
+            await asyncio.sleep(DISPATCH_BACKOFF_BASE * (2 ** attempt))
+    return False
+
+
 async def _poll_loop(watcher: _Watcher) -> None:
     """Background task: polls TikTok and dispatches to callback on is_live change."""
     last_live: bool | None = None
@@ -261,7 +284,7 @@ async def _poll_loop(watcher: _Watcher) -> None:
             status = await get_live_status_sse(watcher.username)
             if last_live is None or status.is_live != last_live:
                 last_live = status.is_live
-                ok = await _dispatch(watcher, status)
+                ok = await _dispatch_with_retry(watcher, status)
                 if not ok:
                     failures += 1
                     logger.warning(

@@ -349,7 +349,7 @@
             return;
           }
           // Validate key before opening SSE: a stale/invalid key causes a silent 401 loop.
-          const probe = await fetch(`/api/status/__probe?key=${encodeURIComponent(apiKey)}`);
+          const probe = await fetch(`/api/keys/verify?key=${encodeURIComponent(apiKey)}`);
           if (probe.status === 401) {
             saveApiKey('');
             keyInput.value = '';

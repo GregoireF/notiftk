@@ -365,7 +365,7 @@ Liveness check — ne touche pas TikTok.
 ```json
 {
   "status": "ok",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "auth_enabled": false,
   "cache_ttl_seconds": 30,
   "poll_interval_seconds": 5,
@@ -467,26 +467,62 @@ Génère une nouvelle clé API en self-service. La clé brute est retournée **u
 
 **Pas d'auth requise.** Limité à 3 clés par IP toutes les 24h.
 
+| Paramètre | Type | Description |
+|-----------|------|-------------|
+| `label` | string (opt.) | Nom lisible pour identifier la clé (max 100 chars) |
+| `expires_in` | int (opt.) | TTL en secondes (max 31 536 000 = 1 an). Omis = jamais expirée |
+| `invite` | string (opt.) | Code d'invitation — requis si `KEY_INVITE_CODE` est configuré côté serveur |
+
 **Réponse (201) :**
 ```json
 {
   "id": "a1b2c3d4",
   "key": "sk_live_...",
+  "expires_at": 1748000000.0,
   "warning": "Copiez cette clé maintenant — elle ne sera plus affichée."
 }
 ```
+`expires_at` est `null` pour les clés sans expiration.
 
 | Code | Cas |
 |------|-----|
 | `201` | Clé générée |
+| `403` | Code d'invitation absent ou invalide |
+| `422` | Label > 100 chars ou `expires_in` invalide |
 | `429` | Limite atteinte (3/IP/24h ou cap global) |
 
 ```bash
-# Générer une clé via cURL
+# Clé sans expiration
 curl -X POST https://notiftk.fly.dev/api/keys
 
-# Avec un label optionnel
-curl -X POST "https://notiftk.fly.dev/api/keys?label=mon-bot-discord"
+# Avec label et durée de vie 7 jours
+curl -X POST "https://notiftk.fly.dev/api/keys?label=bot-discord&expires_in=604800"
+
+# Avec code d'invitation (si KEY_INVITE_CODE configuré)
+curl -X POST "https://notiftk.fly.dev/api/keys?invite=mon-code-secret&label=mon-bot"
+```
+
+---
+
+### `GET /api/keys/verify`
+Vérifie qu'une clé API est valide et non expirée. **Ne touche pas TikTok.** Endpoint léger à appeler avant d'ouvrir un EventSource.
+
+**Auth :** header `X-API-Key` ou `?key=`
+
+**Réponse (200) :**
+```json
+{ "valid": true }
+```
+
+| Code | Cas |
+|------|-----|
+| `200` | Clé valide |
+| `401` | Clé absente, invalide ou expirée |
+
+```bash
+curl -H "X-API-Key: sk_live_..." https://notiftk.fly.dev/api/keys/verify
+# ou
+curl "https://notiftk.fly.dev/api/keys/verify?key=sk_live_..."
 ```
 
 ---
@@ -501,8 +537,8 @@ curl -H "X-Admin-Secret: votre-secret" https://notiftk.fly.dev/api/admin/keys
 **Réponse :**
 ```json
 [
-  { "id": "a1b2c3d4", "label": "mon-bot", "created_at": 1716000000.0, "is_active": true },
-  { "id": "e5f6g7h8", "label": null, "created_at": 1715900000.0, "is_active": false }
+  { "id": "a1b2c3d4", "label": "mon-bot", "created_at": 1716000000.0, "is_active": true, "expires_at": null },
+  { "id": "e5f6g7h8", "label": null, "created_at": 1715900000.0, "is_active": false, "expires_at": 1748000000.0 }
 ]
 ```
 
@@ -558,6 +594,7 @@ Sans `API_KEYS`, l'auth est désactivée. Le **rate limiting par IP est toujours
 |---|---|---|
 | `API_KEYS` | _(vide)_ | Clés admin séparées par des virgules |
 | `ADMIN_SECRET` | _(vide)_ | Secret pour les endpoints `/api/admin/*` (non configuré = endpoints 404) |
+| `KEY_INVITE_CODE` | _(vide)_ | Si défini, `POST /api/keys` exige `?invite=<code>` — restreint la création de clés |
 | `REQUIRE_API_KEY` | `false` | Forcer l'auth même sans clés configurées |
 | `RATE_LIMIT_REQUESTS` | `120` | Max requêtes par fenêtre |
 | `RATE_LIMIT_WINDOW` | `60` | Taille de la fenêtre (secondes) |
@@ -780,6 +817,8 @@ TikTok n'a pas d'API publique pour le statut live. NotiTFK passe par [TikTokLive
 Client → NotiTFK → TikTok (fetch_room_id) → TikTok (fetch_room_info)
                 ↳ Cache REST 30s  (bots one-shot)
                 ↳ Cache SSE  5s   (partagé entre N subscribers → 1 appel/5s)
+                   └─ verrou par username → 1 seul appel TikTok même si N clients
+                      trouvent le cache expiré simultanément (double-checked locking)
 ```
 
 **Pourquoi pas reproduire TikTokLive ?**
@@ -832,7 +871,15 @@ Stage 3 — SaaS (20 €+/mois)
 - [x] **SSE multi-usernames** — `GET /api/stream?users=user1,user2,user3` : une seule connexion pour surveiller jusqu'à 10 streamers.
 - [x] **Événements SSE change-only** — événement uniquement quand `is_live` change + commentaire `: heartbeat` toutes les 30s. Réduit la bande passante × 6.
 - [x] **Clés API self-service** — `POST /api/keys` pour auto-provisioning sans redémarrage. Stockage hashé SHA-256, limite par IP, endpoints admin protégés par `ADMIN_SECRET`.
-- [ ] **Métriques Prometheus** — endpoint `/metrics` : nb requêtes, taux d'erreur, cache hit rate, latence TikTok.
+- [x] **Expiration des clés** — `expires_in` optionnel à la génération. Clés expirées rejetées automatiquement sans action admin.
+- [x] **Invite code** — `KEY_INVITE_CODE` env var pour restreindre la création de clés en déploiement public.
+- [x] **`GET /api/keys/verify`** — endpoint dédié pour valider une clé sans toucher TikTok.
+- [x] **Non-blocking SQLite** — toutes les lectures DB en auth wrappées dans `asyncio.to_thread`. L'event loop n'est plus bloqué sur les I/O disque.
+- [x] **Thundering herd fix** — verrou asyncio par username : 1 seul appel TikTok quand N clients trouvent le cache expiré simultanément.
+- [x] **Webhook retry avec backoff** — 3 tentatives (0 s, 1 s, 2 s) par delivery. Un receiver brièvement down ne perd plus l'événement.
+- [ ] **Métriques Prometheus** — endpoint `/metrics` : nb requêtes, taux d'erreur, cache hit rate, latence TikTok, connexions SSE actives.
+- [ ] **Connection limit par clé** — cap sur le nombre de connexions SSE simultanées par clé (protection contre l'épuisement de ressources).
+- [ ] **Historique de livraison webhook** — `GET /api/watch/{id}/deliveries` : dernières N livraisons avec statut HTTP, timestamp, nb de tentatives.
 - [ ] **Redis cache** — partage du cache entre instances pour le Stage 2 multi-instances.
 
 ### Axes produit

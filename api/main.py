@@ -67,7 +67,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .auth import api_key_dependency, AUTH_ENABLED
-from .keys import generate_key, list_keys, revoke_key, ADMIN_SECRET
+from .keys import (
+    generate_key,
+    list_keys,
+    revoke_key,
+    ADMIN_SECRET,
+    KEY_INVITE_CODE,
+    KeyValidationError,
+    KeyRateLimitError,
+)
 from .models import (
     AdminKeyResponse,
     ErrorResponse,
@@ -135,7 +143,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="NotiTFK",
     description=__doc__,
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -199,7 +207,7 @@ async def health() -> HealthResponse:
         poll_interval_seconds=POLL_INTERVAL,
         active_webhooks=len(list_webhooks()),
         uptime_seconds=round(time.monotonic() - _START_TIME, 1),
-        db_ok=_db_ok(),
+        db_ok=await asyncio.to_thread(_db_ok),
     )
 
 
@@ -350,28 +358,71 @@ def _require_admin(x_admin_secret: Annotated[str | None, Header(alias="X-Admin-S
     "/api/keys",
     response_model=KeyResponse,
     status_code=201,
-    responses={429: {"description": "Per-IP or global key cap reached"}},
+    responses={
+        403: {"description": "Invalid or missing invite code"},
+        422: {"description": "Invalid label or expires_in"},
+        429: {"description": "Per-IP or global key cap reached"},
+    },
     summary="Generate a self-service API key",
     tags=["Keys"],
 )
-async def create_key(request: Request, label: str | None = None) -> KeyResponse:
+async def create_key(
+    request: Request,
+    label: str | None = None,
+    invite: str | None = None,
+    expires_in: int | None = None,
+) -> KeyResponse:
     """
     Generate a new API key. **The key is shown only once — save it immediately.**
 
     Rate-limited: max 3 keys per IP per 24 hours.
 
-    Pass an optional `label` query param to identify the key (e.g. `?label=my-bot`).
+    - `label` — optional human-readable name for the key (max 100 chars).
+    - `invite` — required when `KEY_INVITE_CODE` env var is set on the server.
+    - `expires_in` — optional TTL in seconds (max 31 536 000 = 1 year). Omit for a
+      non-expiring key.
     """
+    if KEY_INVITE_CODE and invite != KEY_INVITE_CODE:
+        raise HTTPException(status_code=403, detail="Code d'invitation requis ou invalide.")
     ip = _client_ip(request)
     try:
-        key_id, raw_key = generate_key(ip, label)
-    except ValueError as e:
+        key_id, raw_key, expires_at = await asyncio.to_thread(generate_key, ip, label, expires_in)
+    except KeyValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except KeyRateLimitError as e:
         raise HTTPException(status_code=429, detail=str(e))
     return KeyResponse(
         id=key_id,
         key=raw_key,
+        expires_at=expires_at,
         warning="Copiez cette clé maintenant — elle ne sera plus affichée.",
     )
+
+
+@app.get(
+    "/api/keys/verify",
+    summary="Verify an API key",
+    tags=["Keys"],
+    responses={
+        200: {"description": "Key is valid"},
+        401: {"description": "Missing or invalid API key"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    dependencies=[_auth],
+)
+async def verify_key() -> dict:
+    """
+    Returns `{"valid": true}` if the supplied key is valid, 401 otherwise.
+
+    Use this instead of probing a data endpoint to test key validity — it
+    does not hit TikTok's API and is cheap to call.
+
+    ```js
+    const r = await fetch('/api/keys/verify?key=sk_live_...');
+    if (r.status === 401) { /* key is stale or invalid */ }
+    ```
+    """
+    return {"valid": True}
 
 
 @app.get(
@@ -383,7 +434,8 @@ async def create_key(request: Request, label: str | None = None) -> KeyResponse:
 )
 async def admin_list_keys() -> list[AdminKeyResponse]:
     """List all generated keys with their metadata. Requires `X-Admin-Secret` header."""
-    return [AdminKeyResponse(**k) for k in list_keys()]
+    keys = await asyncio.to_thread(list_keys)
+    return [AdminKeyResponse(**k) for k in keys]
 
 
 @app.delete(
@@ -395,7 +447,8 @@ async def admin_list_keys() -> list[AdminKeyResponse]:
 )
 async def admin_revoke_key(key_id: str):
     """Revoke a key by its ID. The key immediately stops working."""
-    if not revoke_key(key_id):
+    removed = await asyncio.to_thread(revoke_key, key_id)
+    if not removed:
         raise HTTPException(status_code=404, detail=f"Key '{key_id}' not found.")
 
 

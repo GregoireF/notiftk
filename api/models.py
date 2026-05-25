@@ -36,6 +36,7 @@ class WatchResponse(BaseModel):
 class KeyResponse(BaseModel):
     id: str
     key: str
+    expires_at: float | None = None
     warning: str
 
 
@@ -44,6 +45,7 @@ class AdminKeyResponse(BaseModel):
     label: str | None
     created_at: float
     is_active: bool
+    expires_at: float | None = None
 
 
 class HealthResponse(BaseModel):
