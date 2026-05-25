@@ -20,8 +20,11 @@ from api.webhooks import (
     register_webhook,
     unregister_webhook,
     list_webhooks,
+    list_all_webhooks,
+    get_delivery_history,
     restore_webhooks,
     _dispatch,
+    _dispatch_with_retry,
     _poll_loop,
     _watchers,
     _Watcher,
@@ -231,7 +234,8 @@ async def test_dispatch_posts_json():
     with patch("api.webhooks.httpx.AsyncClient", return_value=mock_client):
         result = await _dispatch(watcher, status)
 
-    assert result is True
+    ok, http_status = result
+    assert ok is True
     body = json.loads(mock_client.post.call_args.kwargs["content"])
     assert body["is_live"] is True
     assert body["username"] == "testuser"
@@ -276,7 +280,9 @@ async def test_dispatch_returns_false_on_exception():
     with patch("api.webhooks.httpx.AsyncClient", return_value=mock_client):
         result = await _dispatch(watcher, _live_status())
 
-    assert result is False
+    ok, http_status = result
+    assert ok is False
+    assert http_status is None
 
 
 @pytest.mark.asyncio
@@ -294,7 +300,8 @@ async def test_dispatch_returns_false_on_non_2xx():
     with patch("api.webhooks.httpx.AsyncClient", return_value=mock_client):
         result = await _dispatch(watcher, _live_status())
 
-    assert result is False
+    ok, _ = result
+    assert ok is False
 
 
 # ── Poll loop ─────────────────────────────────────────────────────────────────
@@ -318,7 +325,7 @@ async def test_poll_loop_dispatches_on_change():
 
     async def fake_dispatch(w, s):
         dispatch_calls.append(s.is_live)
-        return True
+        return True, 200
 
     with (
         patch("api.webhooks.get_live_status_sse", fake_get_status),
@@ -352,7 +359,7 @@ async def test_poll_loop_stops_after_max_failures():
 
     with (
         patch("api.webhooks.get_live_status_sse", alternating_status),
-        patch("api.webhooks._dispatch", AsyncMock(return_value=False)),
+        patch("api.webhooks._dispatch", AsyncMock(return_value=(False, 503))),
         patch("api.webhooks.asyncio.sleep", AsyncMock()),
     ):
         await _poll_loop(watcher)
@@ -375,3 +382,206 @@ async def test_poll_loop_removes_watcher_on_user_not_found():
         await _poll_loop(watcher)
 
     assert "w7" not in _watchers
+
+
+# ── Ownership ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_register_stores_owner_key_hash():
+    """Registering with owner_key stores its SHA-256 hash, not the raw key."""
+    owner_key = "sk_live_test_owner_key"
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=owner_key)
+    expected_hash = hashlib.sha256(owner_key.encode()).hexdigest()
+    assert _watchers[watch_id].owner_key_hash == expected_hash
+
+
+@pytest.mark.asyncio
+async def test_register_without_owner_key_stores_null():
+    """Anonymous registration (auth disabled) stores None as owner_key_hash."""
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=None)
+    assert _watchers[watch_id].owner_key_hash is None
+
+
+@pytest.mark.asyncio
+async def test_list_webhooks_filtered_by_owner_key():
+    """list_webhooks(owner_key) returns only that key's webhooks."""
+    key_a = "sk_live_key_a"
+    key_b = "sk_live_key_b"
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        id_a = await register_webhook("ninja", "https://a.example.com/hook", owner_key=key_a)
+        id_b = await register_webhook("pokimane", "https://b.example.com/hook", owner_key=key_b)
+
+    visible_to_a = {w.watch_id for w in list_webhooks(owner_key=key_a)}
+    assert id_a in visible_to_a
+    assert id_b not in visible_to_a
+
+
+@pytest.mark.asyncio
+async def test_list_webhooks_legacy_null_visible_to_all():
+    """Legacy webhooks (owner_key_hash=NULL) are visible to any authenticated caller."""
+    owner_key = "sk_live_some_key"
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        legacy_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=None)
+
+    visible = {w.watch_id for w in list_webhooks(owner_key=owner_key)}
+    assert legacy_id in visible
+
+
+@pytest.mark.asyncio
+async def test_list_all_webhooks_returns_everyone():
+    """list_all_webhooks() returns all regardless of ownership."""
+    key_a = "sk_live_key_a"
+    key_b = "sk_live_key_b"
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        id_a = await register_webhook("ninja", "https://a.example.com/hook", owner_key=key_a)
+        id_b = await register_webhook("pokimane", "https://b.example.com/hook", owner_key=key_b)
+
+    all_ids = {w.watch_id for w in list_all_webhooks()}
+    assert id_a in all_ids
+    assert id_b in all_ids
+
+
+@pytest.mark.asyncio
+async def test_unregister_wrong_owner_returns_false():
+    """Attempting to delete another key's webhook returns False (no enumeration leak)."""
+    key_a = "sk_live_key_a"
+    key_b = "sk_live_key_b"
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=key_a)
+
+    result = await unregister_webhook(watch_id, owner_key=key_b)
+    assert result is False
+    assert watch_id in _watchers  # not deleted
+
+
+@pytest.mark.asyncio
+async def test_unregister_admin_bypasses_ownership():
+    """Admin path (owner_key=None) can delete any webhook regardless of ownership."""
+    owner_key = "sk_live_key_a"
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=owner_key)
+
+    result = await unregister_webhook(watch_id, owner_key=None)
+    assert result is True
+    assert watch_id not in _watchers
+
+
+@pytest.mark.asyncio
+async def test_unregister_own_webhook_succeeds():
+    """A key can delete its own webhook."""
+    owner_key = "sk_live_key_a"
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook", owner_key=owner_key)
+
+    result = await unregister_webhook(watch_id, owner_key=owner_key)
+    assert result is True
+    assert watch_id not in _watchers
+
+
+# ── Delivery history ──────────────────────────────────────────────────────────
+
+
+def test_get_delivery_history_unknown_id_returns_none():
+    """Unknown watch_id returns None so the endpoint can distinguish 404 vs empty."""
+    assert get_delivery_history("does-not-exist") is None
+
+
+@pytest.mark.asyncio
+async def test_get_delivery_history_empty_for_new_webhook():
+    """Freshly registered webhook has an empty delivery history, not None."""
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook")
+
+    records = get_delivery_history(watch_id)
+    assert records == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_history_cleared_on_unregister():
+    """Unregistering a webhook removes its delivery history from memory."""
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook")
+    await unregister_webhook(watch_id)
+    assert get_delivery_history(watch_id) is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_with_retry_records_success():
+    """_dispatch_with_retry appends a success record on first-attempt delivery."""
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook")
+    watcher = _watchers[watch_id]
+
+    with patch("api.webhooks._dispatch", AsyncMock(return_value=(True, 200))):
+        await _dispatch_with_retry(watcher, _live_status())
+
+    records = get_delivery_history(watch_id)
+    assert len(records) == 1
+    assert records[0]["success"] is True
+    assert records[0]["http_status"] == 200
+    assert records[0]["attempt_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_with_retry_records_failure_after_all_attempts():
+    """_dispatch_with_retry records a failure only once after all retries are exhausted."""
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook")
+    watcher = _watchers[watch_id]
+
+    with (
+        patch("api.webhooks._dispatch", AsyncMock(return_value=(False, 503))),
+        patch("api.webhooks.asyncio.sleep", AsyncMock()),
+    ):
+        await _dispatch_with_retry(watcher, _live_status())
+
+    records = get_delivery_history(watch_id)
+    assert len(records) == 1
+    assert records[0]["success"] is False
+    assert records[0]["http_status"] == 503
+    assert records[0]["attempt_count"] == wh.DISPATCH_MAX_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_delivery_history_capped_at_20():
+    """Ring buffer never exceeds _MAX_DELIVERY_HISTORY entries."""
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook")
+    watcher = _watchers[watch_id]
+
+    with (
+        patch("api.webhooks._dispatch", AsyncMock(return_value=(True, 200))),
+        patch("api.webhooks.asyncio.sleep", AsyncMock()),
+    ):
+        for _ in range(25):
+            await _dispatch_with_retry(watcher, _live_status())
+
+    records = get_delivery_history(watch_id)
+    assert len(records) == wh._MAX_DELIVERY_HISTORY
+
+
+@pytest.mark.asyncio
+async def test_delivery_history_order_is_most_recent_first():
+    """get_delivery_history() returns records in reverse-chronological order."""
+    with patch("api.webhooks.get_live_status_sse", AsyncMock(return_value=_live_status())):
+        watch_id = await register_webhook("ninja", "https://a.example.com/hook")
+    watcher = _watchers[watch_id]
+
+    call_n = 0
+
+    async def dispatch_side_effect(w, s):
+        nonlocal call_n
+        call_n += 1
+        return (True, 200 + call_n)
+
+    with patch("api.webhooks._dispatch", dispatch_side_effect):
+        for _ in range(3):
+            await _dispatch_with_retry(watcher, _live_status())
+
+    records = get_delivery_history(watch_id)
+    # most-recent first → http_status decreasing (203, 202, 201)
+    statuses = [r["http_status"] for r in records]
+    assert statuses == sorted(statuses, reverse=True)

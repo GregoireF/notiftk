@@ -177,3 +177,138 @@ class TestAdminRevokeKey:
             headers={"X-Admin-Secret": "bad-secret"},
         )
         assert r.status_code == 404
+
+
+# ── GET /api/keys/verify ──────────────────────────────────────────────────────
+
+
+class TestVerifyKey:
+    def test_verify_no_auth_when_disabled_returns_200(self):
+        """When auth is disabled (no API_KEYS), /api/keys/verify is open and returns valid."""
+        r = client.get("/api/keys/verify")
+        assert r.status_code == 200
+        assert r.json() == {"valid": True}
+
+    def test_verify_valid_key_returns_200(self):
+        """A generated key is accepted by /api/keys/verify."""
+        create_r = client.post("/api/keys")
+        key = create_r.json()["key"]
+        with (
+            patch("api.auth.AUTH_ENABLED", True),
+            patch("api.auth.VALID_KEYS", frozenset()),
+        ):
+            r = client.get("/api/keys/verify", headers={"X-API-Key": key})
+        assert r.status_code == 200
+        assert r.json() == {"valid": True}
+
+    def test_verify_wrong_key_returns_401(self):
+        """Invalid key returns 401 from /api/keys/verify."""
+        with (
+            patch("api.auth.AUTH_ENABLED", True),
+            patch("api.auth.VALID_KEYS", frozenset()),
+        ):
+            r = client.get("/api/keys/verify", headers={"X-API-Key": "sk_live_fake"})
+        assert r.status_code == 401
+
+    def test_verify_no_key_when_auth_enabled_returns_401(self):
+        """Missing key returns 401 when auth is enabled."""
+        with (
+            patch("api.auth.AUTH_ENABLED", True),
+            patch("api.auth.VALID_KEYS", frozenset()),
+        ):
+            r = client.get("/api/keys/verify")
+        assert r.status_code == 401
+
+
+# ── Key expiration ────────────────────────────────────────────────────────────
+
+
+class TestKeyExpiration:
+    def test_expires_in_sets_expires_at(self):
+        """POST /api/keys?expires_in=3600 includes expires_at in the response."""
+        r = client.post("/api/keys?expires_in=3600")
+        assert r.status_code == 201
+        body = r.json()
+        assert body["expires_at"] is not None
+        import time
+        assert body["expires_at"] > time.time()
+
+    def test_no_expires_in_returns_null_expires_at(self):
+        """Without expires_in, expires_at is null (key never expires)."""
+        r = client.post("/api/keys")
+        assert r.status_code == 201
+        assert r.json()["expires_at"] is None
+
+    def test_expired_key_rejected(self):
+        """A key past its expiry timestamp is rejected by the auth layer."""
+        create_r = client.post("/api/keys?expires_in=1")
+        key = create_r.json()["key"]
+
+        import api.keys as keys_module
+        import time
+
+        # Force-expire the key by backdating its expires_at
+        with keys_module._db() as conn:
+            conn.execute(
+                "UPDATE api_keys SET expires_at = ? WHERE key_hash = ?",
+                [time.time() - 10, keys_module._hash(key)],
+            )
+
+        with (
+            patch("api.auth.AUTH_ENABLED", True),
+            patch("api.auth.VALID_KEYS", frozenset()),
+        ):
+            r = client.get("/api/status/ninja", headers={"X-API-Key": key})
+        assert r.status_code == 401
+
+    def test_expires_in_too_large_returns_422(self):
+        """expires_in exceeding 1 year returns 422."""
+        r = client.post("/api/keys?expires_in=99999999")
+        assert r.status_code == 422
+
+    def test_expires_in_zero_returns_422(self):
+        """expires_in=0 is invalid and returns 422."""
+        r = client.post("/api/keys?expires_in=0")
+        assert r.status_code == 422
+
+
+# ── Invite code ───────────────────────────────────────────────────────────────
+
+
+class TestInviteCode:
+    def test_invite_required_when_configured(self):
+        """When KEY_INVITE_CODE is set, POST /api/keys without invite returns 403."""
+        with patch("api.main.KEY_INVITE_CODE", "secret-invite"):
+            r = client.post("/api/keys")
+        assert r.status_code == 403
+
+    def test_wrong_invite_returns_403(self):
+        with patch("api.main.KEY_INVITE_CODE", "secret-invite"):
+            r = client.post("/api/keys?invite=wrong")
+        assert r.status_code == 403
+
+    def test_correct_invite_returns_201(self):
+        with patch("api.main.KEY_INVITE_CODE", "secret-invite"):
+            r = client.post("/api/keys?invite=secret-invite")
+        assert r.status_code == 201
+
+    def test_no_invite_code_configured_allows_open_registration(self):
+        """When KEY_INVITE_CODE is empty, invite param is irrelevant."""
+        with patch("api.main.KEY_INVITE_CODE", ""):
+            r = client.post("/api/keys")
+        assert r.status_code == 201
+
+
+# ── Label validation ──────────────────────────────────────────────────────────
+
+
+class TestLabelValidation:
+    def test_label_exactly_100_chars_accepted(self):
+        label = "a" * 100
+        r = client.post(f"/api/keys?label={label}")
+        assert r.status_code == 201
+
+    def test_label_101_chars_returns_422(self):
+        label = "a" * 101
+        r = client.post(f"/api/keys?label={label}")
+        assert r.status_code == 422

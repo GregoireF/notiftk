@@ -17,6 +17,7 @@ import pytest
 
 import api.webhooks as wh
 import api.keys as keys_module
+import api.main as main_module
 from api.webhooks import _watchers
 
 
@@ -29,9 +30,12 @@ async def clean_state(tmp_path):
     wh._DB_PATH = test_db
     keys_module.DB_PATH = test_db
 
-    # Clear in-memory rate-limit state for key generation
+    # Clear all in-memory state
     keys_module._gen_log.clear()
     _watchers.clear()
+    wh._delivery_history.clear()
+    main_module._sse_connections.clear()
+    main_module._sse_per_username.clear()
 
     yield
 
@@ -43,6 +47,9 @@ async def clean_state(tmp_path):
         await asyncio.gather(*pending, return_exceptions=True)
 
     _watchers.clear()
+    wh._delivery_history.clear()
+    main_module._sse_connections.clear()
+    main_module._sse_per_username.clear()
     keys_module._gen_log.clear()
     wh._DB_PATH = original_wh_path
     keys_module.DB_PATH = original_keys_path

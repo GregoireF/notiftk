@@ -13,12 +13,12 @@ client or direct generator access avoids that entirely.
 
 import json
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
-from api.main import app, _sse_generator, live_stream, HEARTBEAT_EVERY
+from api.main import app, _sse_generator, live_stream, live_stream_multi, HEARTBEAT_EVERY
 from api.models import LiveStatus
 from api.tiktok import TikTokUserNotFound, TikTokAPIError
 from api.webhooks import _watchers
@@ -28,6 +28,14 @@ sync_client = TestClient(app)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _mock_request(ip: str = "testclient") -> MagicMock:
+    """Minimal FastAPI Request stub for direct handler calls."""
+    req = MagicMock()
+    req.headers.get.return_value = None  # no X-Forwarded-For
+    req.client.host = ip
+    return req
 
 
 def _mock_status(is_live: bool = False) -> LiveStatus:
@@ -98,28 +106,28 @@ class TestLiveStatusEndpoint:
 @pytest.mark.asyncio
 async def test_sse_returns_streaming_response():
     """live_stream() must return a StreamingResponse, not a JSON response."""
-    response = await live_stream("testuser")
+    response = await live_stream("testuser", request=_mock_request(), _key=None)
     assert isinstance(response, StreamingResponse)
 
 
 @pytest.mark.asyncio
 async def test_sse_content_type():
     """SSE endpoint must advertise text/event-stream."""
-    response = await live_stream("testuser")
+    response = await live_stream("testuser", request=_mock_request(), _key=None)
     assert response.media_type == "text/event-stream"
 
 
 @pytest.mark.asyncio
 async def test_sse_no_cache_control():
     """SSE response must carry Cache-Control: no-cache."""
-    response = await live_stream("testuser")
+    response = await live_stream("testuser", request=_mock_request(), _key=None)
     assert response.headers.get("cache-control") == "no-cache"
 
 
 @pytest.mark.asyncio
 async def test_sse_nginx_buffering_disabled():
     """X-Accel-Buffering: no prevents nginx from holding back SSE events."""
-    response = await live_stream("testuser")
+    response = await live_stream("testuser", request=_mock_request(), _key=None)
     assert response.headers.get("x-accel-buffering") == "no"
 
 
@@ -132,7 +140,7 @@ async def test_sse_nginx_buffering_disabled():
 async def test_sse_generator_first_event_is_valid_json():
     """First event must be parseable JSON with the expected fields."""
     with patch("api.main.get_live_status_sse", AsyncMock(return_value=_mock_status(is_live=True))):
-        gen = _sse_generator("testuser")
+        gen = _sse_generator("testuser", "testclient")
         line = await gen.__anext__()  # read first yield, generator pauses BEFORE sleep
         await gen.aclose()  # GeneratorExit — clean shutdown
 
@@ -150,7 +158,7 @@ async def test_sse_generator_user_not_found_surfaces_error_and_stops():
         "api.main.get_live_status_sse",
         AsyncMock(side_effect=TikTokUserNotFound("User does not exist")),
     ):
-        gen = _sse_generator("ghost")
+        gen = _sse_generator("ghost", "testclient")
         line = await gen.__anext__()  # error event
 
         # Generator should be exhausted (returned) after a fatal error
@@ -181,7 +189,7 @@ async def test_sse_generator_transient_error_continues():
 
     with patch("api.main.get_live_status_sse", side_effect):
         with patch("api.main.asyncio.sleep", AsyncMock()):
-            gen = _sse_generator("testuser")
+            gen = _sse_generator("testuser", "testclient")
             error_line = await gen.__anext__()  # transient error event
             status_line = await gen.__anext__()  # recovery event
             await gen.aclose()
@@ -198,7 +206,7 @@ async def test_sse_generator_transient_error_continues():
 async def test_sse_generator_offline_user():
     """Offline user should emit is_live=false with null fields."""
     with patch("api.main.get_live_status_sse", AsyncMock(return_value=_mock_status(is_live=False))):
-        gen = _sse_generator("testuser")
+        gen = _sse_generator("testuser", "testclient")
         line = await gen.__anext__()
         await gen.aclose()
 
@@ -222,7 +230,7 @@ async def test_sse_generator_no_duplicate_events():
         patch("api.main.get_live_status_sse", same_status),
         patch("api.main.asyncio.sleep", AsyncMock()),
     ):
-        gen = _sse_generator("testuser")
+        gen = _sse_generator("testuser", "testclient")
         # Read enough iterations to cover HEARTBEAT_EVERY polls without a change
         for _ in range(HEARTBEAT_EVERY + 1):
             try:
@@ -253,7 +261,7 @@ async def test_sse_generator_heartbeat_format():
         patch("api.main.get_live_status_sse", same_status),
         patch("api.main.asyncio.sleep", AsyncMock()),
     ):
-        gen = _sse_generator("testuser")
+        gen = _sse_generator("testuser", "testclient")
         for _ in range(HEARTBEAT_EVERY + 1):
             try:
                 events.append(await gen.__anext__())
@@ -388,10 +396,167 @@ class TestMultiSSE:
 
     @pytest.mark.asyncio
     async def test_valid_multi_returns_streaming_response(self):
-        from fastapi.responses import StreamingResponse
-        from api.main import live_stream_multi
-
-        # Call the async handler directly — avoids hanging on the infinite SSE generator
-        response = await live_stream_multi(users="ninja,pokimane")
+        response = await live_stream_multi(
+            users="ninja,pokimane", request=_mock_request(), _key=None
+        )
         assert isinstance(response, StreamingResponse)
         assert response.media_type == "text/event-stream"
+
+
+# ── Health endpoint fields ────────────────────────────────────────────────────
+
+
+class TestHealthFields:
+    def test_health_has_timestamp(self):
+        """Health must include a Unix timestamp for detecting stale proxy responses."""
+        r = sync_client.get("/health")
+        body = r.json()
+        assert "timestamp" in body
+        assert isinstance(body["timestamp"], float)
+        assert body["timestamp"] > 0
+
+    def test_health_has_active_sse_connections(self):
+        """Health must report total open SSE connections."""
+        r = sync_client.get("/health")
+        body = r.json()
+        assert "active_sse_connections" in body
+        assert isinstance(body["active_sse_connections"], int)
+
+
+# ── SSE connection cap ────────────────────────────────────────────────────────
+
+
+class TestSSECap:
+    def test_sse_per_key_cap_returns_429(self):
+        """Exceeding SSE_MAX_PER_KEY for the same identity returns 429."""
+        import api.main as main_module
+
+        identity = "cap-test-key"
+        main_module._sse_connections[identity] = 999  # saturate the counter
+        try:
+            with patch("api.main.SSE_MAX_PER_KEY", 1):
+                r = sync_client.get(
+                    "/api/stream/ninja", headers={"X-Forwarded-For": identity}
+                )
+        finally:
+            main_module._sse_connections.pop(identity, None)
+        assert r.status_code == 429
+
+    def test_sse_per_username_cap_returns_429(self):
+        """Exceeding SSE_MAX_PER_USERNAME for a username returns 429."""
+        import api.main as main_module
+
+        main_module._sse_per_username["ninja"] = 999
+        try:
+            with patch("api.main.SSE_MAX_PER_USERNAME", 1):
+                r = sync_client.get("/api/stream/ninja")
+        finally:
+            main_module._sse_per_username.pop("ninja", None)
+        assert r.status_code == 429
+
+
+# ── Delivery history endpoint ─────────────────────────────────────────────────
+
+
+class TestDeliveryHistoryEndpoint:
+    def test_unknown_watch_id_returns_404(self):
+        r = sync_client.get("/api/watch/does-not-exist/deliveries")
+        assert r.status_code == 404
+
+    def test_known_watch_id_returns_list(self):
+        from api.webhooks import _watchers, _delivery_history, _Watcher
+        from collections import deque
+
+        watch_id = "test-delivery-id"
+        _watchers[watch_id] = _Watcher(
+            watch_id=watch_id,
+            username="ninja",
+            callback_url="https://example.com/hook",
+            secret=None,
+        )
+        buf = deque(maxlen=20)
+        import time as _time
+        buf.append(
+            __import__("api.webhooks", fromlist=["_DeliveryRecord"])._DeliveryRecord(
+                timestamp=_time.time(), http_status=200, attempt_count=1, success=True
+            )
+        )
+        _delivery_history[watch_id] = buf
+        try:
+            r = sync_client.get(f"/api/watch/{watch_id}/deliveries")
+        finally:
+            _watchers.pop(watch_id, None)
+            _delivery_history.pop(watch_id, None)
+
+        assert r.status_code == 200
+        records = r.json()
+        assert len(records) == 1
+        assert records[0]["success"] is True
+        assert records[0]["http_status"] == 200
+        assert records[0]["attempt_count"] == 1
+
+
+# ── Admin watches endpoint ────────────────────────────────────────────────────
+
+
+class TestAdminWatchesEndpoint:
+    _ADMIN = "test-admin-secret-32chars-padded!!"
+
+    def test_no_secret_returns_404(self):
+        r = sync_client.get("/api/admin/watches")
+        assert r.status_code == 404
+
+    def test_wrong_secret_returns_404(self):
+        with patch("api.main.ADMIN_SECRET", self._ADMIN):
+            r = sync_client.get(
+                "/api/admin/watches", headers={"X-Admin-Secret": "wrong"}
+            )
+        assert r.status_code == 404
+
+    def test_correct_secret_returns_all_watches(self):
+        from api.webhooks import _watchers, _Watcher
+
+        watch_id = "admin-watch-test"
+        _watchers[watch_id] = _Watcher(
+            watch_id=watch_id,
+            username="ninja",
+            callback_url="https://example.com/hook",
+            secret=None,
+            owner_key_hash="deadbeef",
+        )
+        try:
+            with patch("api.main.ADMIN_SECRET", self._ADMIN):
+                r = sync_client.get(
+                    "/api/admin/watches", headers={"X-Admin-Secret": self._ADMIN}
+                )
+        finally:
+            _watchers.pop(watch_id, None)
+
+        assert r.status_code == 200
+        body = r.json()
+        entry = next((w for w in body if w["watch_id"] == watch_id), None)
+        assert entry is not None
+        assert entry["owner_key_hash"] == "deadbeef"
+
+    def test_secrets_never_exposed(self):
+        """owner secret must not appear in admin/watches response."""
+        from api.webhooks import _watchers, _Watcher
+
+        watch_id = "secret-watch-test"
+        _watchers[watch_id] = _Watcher(
+            watch_id=watch_id,
+            username="ninja",
+            callback_url="https://example.com/hook",
+            secret="super-secret-value",
+        )
+        try:
+            with patch("api.main.ADMIN_SECRET", self._ADMIN):
+                r = sync_client.get(
+                    "/api/admin/watches", headers={"X-Admin-Secret": self._ADMIN}
+                )
+        finally:
+            _watchers.pop(watch_id, None)
+
+        assert r.status_code == 200
+        raw = r.text
+        assert "super-secret-value" not in raw
