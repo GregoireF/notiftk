@@ -25,13 +25,20 @@ Limits (configurable via env vars):
   MAX_WEBHOOKS       — global cap (default: 100)
   MAX_WEBHOOKS_PER_USER — per username cap (default: 5)
 
+Ownership:
+  Webhooks created with a key are bound to that key via owner_key_hash
+  (SHA-256 of the raw key). List/delete filter to the caller's hash.
+  Legacy webhooks with NULL owner_key_hash are accessible to all callers.
+  Admin (via X-Admin-Secret) always sees and can delete all webhooks.
+
 Public API:
-  restore_webhooks()                                     — call on app startup
-  shutdown_webhooks()                                    — call on app shutdown
-  register_webhook(username, callback_url, secret=None)  → watch_id (str)
-  unregister_webhook(watch_id)                           → bool (True = removed)
-  list_webhooks()                                        → list[_Watcher]
-  get_delivery_history(watch_id)                         → list[dict] | None
+  restore_webhooks()                                             — call on app startup
+  shutdown_webhooks()                                            — call on app shutdown
+  register_webhook(username, callback_url, secret, owner_key)   → watch_id (str)
+  unregister_webhook(watch_id, owner_key)                        → bool (True = removed)
+  list_webhooks(owner_key)                                       → list[_Watcher]
+  list_all_webhooks()                                            → list[_Watcher] (admin)
+  get_delivery_history(watch_id)                                 → list[dict] | None
 
 Exceptions:
   WebhookLimitExceeded  — global or per-user cap reached  → HTTP 429
@@ -104,12 +111,17 @@ class WebhookURLError(ValueError):
 # ── Data model ────────────────────────────────────────────────────────────────
 
 
+def _hash_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
 @dataclass
 class _Watcher:
     watch_id: str
     username: str
     callback_url: str
     secret: str | None
+    owner_key_hash: str | None = None
     task: asyncio.Task | None = field(default=None, repr=False)
 
 
@@ -197,20 +209,27 @@ def _db_setup() -> None:
     with sqlite3.connect(_DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS webhooks (
-                watch_id     TEXT PRIMARY KEY,
-                username     TEXT NOT NULL,
-                callback_url TEXT NOT NULL,
-                secret       TEXT
+                watch_id       TEXT PRIMARY KEY,
+                username       TEXT NOT NULL,
+                callback_url   TEXT NOT NULL,
+                secret         TEXT,
+                owner_key_hash TEXT
             )
         """)
+        try:
+            conn.execute("ALTER TABLE webhooks ADD COLUMN owner_key_hash TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
-def _db_insert_sync(watch_id: str, username: str, callback_url: str, secret: str | None) -> None:
+def _db_insert_sync(
+    watch_id: str, username: str, callback_url: str, secret: str | None, owner_key_hash: str | None
+) -> None:
     _db_setup()
     with sqlite3.connect(_DB_PATH) as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO webhooks VALUES (?, ?, ?, ?)",
-            (watch_id, username, callback_url, secret),
+            "INSERT OR REPLACE INTO webhooks VALUES (?, ?, ?, ?, ?)",
+            (watch_id, username, callback_url, secret, owner_key_hash),
         )
 
 
@@ -223,7 +242,7 @@ def _db_delete_sync(watch_id: str) -> None:
 def _db_load_all_sync() -> list[tuple]:
     with sqlite3.connect(_DB_PATH) as conn:
         return conn.execute(
-            "SELECT watch_id, username, callback_url, secret FROM webhooks"
+            "SELECT watch_id, username, callback_url, secret, owner_key_hash FROM webhooks"
         ).fetchall()
 
 
@@ -234,9 +253,13 @@ async def restore_webhooks() -> None:
     """Load persisted webhooks from DB and restart poll tasks. Call once on startup."""
     await asyncio.to_thread(_db_setup)
     rows = await asyncio.to_thread(_db_load_all_sync)
-    for watch_id, username, callback_url, secret in rows:
+    for watch_id, username, callback_url, secret, owner_key_hash in rows:
         watcher = _Watcher(
-            watch_id=watch_id, username=username, callback_url=callback_url, secret=secret
+            watch_id=watch_id,
+            username=username,
+            callback_url=callback_url,
+            secret=secret,
+            owner_key_hash=owner_key_hash,
         )
         watcher.task = asyncio.create_task(_poll_loop(watcher), name=f"webhook-{watch_id[:8]}")
         _watchers[watch_id] = watcher
@@ -256,9 +279,17 @@ async def shutdown_webhooks() -> None:
     logger.info("Cancelled %d webhook task(s) on shutdown.", len(tasks))
 
 
-async def register_webhook(username: str, callback_url: str, secret: str | None = None) -> str:
+async def register_webhook(
+    username: str,
+    callback_url: str,
+    secret: str | None = None,
+    owner_key: str | None = None,
+) -> str:
     """
     Register a new webhook and start its background poll loop.
+
+    owner_key: raw API key of the creator. Hashed before storage. Pass None
+    when auth is disabled (anonymous registration → legacy NULL ownership).
 
     Raises:
         WebhookURLError:      Callback URL targets a private/loopback address.
@@ -275,21 +306,39 @@ async def register_webhook(username: str, callback_url: str, secret: str | None 
             f"Limit of {MAX_WEBHOOKS_PER_USER} webhooks per username reached for '{uname}'."
         )
 
+    okh = _hash_key(owner_key) if owner_key else None
     watch_id = str(uuid.uuid4())
-    watcher = _Watcher(watch_id=watch_id, username=uname, callback_url=callback_url, secret=secret)
+    watcher = _Watcher(
+        watch_id=watch_id,
+        username=uname,
+        callback_url=callback_url,
+        secret=secret,
+        owner_key_hash=okh,
+    )
     watcher.task = asyncio.create_task(_poll_loop(watcher), name=f"webhook-{watch_id[:8]}")
     _watchers[watch_id] = watcher
     _delivery_history[watch_id] = deque(maxlen=_MAX_DELIVERY_HISTORY)
-    await asyncio.to_thread(_db_insert_sync, watch_id, uname, callback_url, secret)
+    await asyncio.to_thread(_db_insert_sync, watch_id, uname, callback_url, secret, okh)
     logger.info("Registered webhook %s for '%s' → %s", watch_id[:8], uname, callback_url)
     return watch_id
 
 
-async def unregister_webhook(watch_id: str) -> bool:
-    """Cancel the poll task, remove from memory and DB. Returns False if not found."""
-    watcher = _watchers.pop(watch_id, None)
+async def unregister_webhook(watch_id: str, owner_key: str | None = None) -> bool:
+    """
+    Cancel the poll task, remove from memory and DB.
+
+    Returns False if not found OR if owner_key doesn't match the stored
+    owner_key_hash (both surface as 404 to the client — no enumeration).
+    Pass owner_key=None to bypass ownership check (admin path).
+    NULL owner_key_hash (legacy) is always deletable by any authenticated caller.
+    """
+    watcher = _watchers.get(watch_id)
     if watcher is None:
         return False
+    if owner_key is not None and watcher.owner_key_hash is not None:
+        if watcher.owner_key_hash != _hash_key(owner_key):
+            return False
+    _watchers.pop(watch_id, None)
     if watcher.task and not watcher.task.done():
         watcher.task.cancel()
     _delivery_history.pop(watch_id, None)
@@ -298,8 +347,22 @@ async def unregister_webhook(watch_id: str) -> bool:
     return True
 
 
-def list_webhooks() -> list[_Watcher]:
-    """Return all active watchers. Callers must not expose the secret field."""
+def list_webhooks(owner_key: str | None = None) -> list[_Watcher]:
+    """
+    Return watchers visible to owner_key.
+
+    If owner_key is provided, returns webhooks where owner_key_hash matches
+    OR owner_key_hash is NULL (legacy webhooks created before ownership was
+    introduced). Pass owner_key=None for the admin path (returns all).
+    """
+    if owner_key is None:
+        return list(_watchers.values())
+    okh = _hash_key(owner_key)
+    return [w for w in _watchers.values() if w.owner_key_hash is None or w.owner_key_hash == okh]
+
+
+def list_all_webhooks() -> list[_Watcher]:
+    """Return all watchers regardless of ownership. Admin-only path."""
     return list(_watchers.values())
 
 

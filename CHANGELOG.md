@@ -5,6 +5,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ---
 
+## [0.4.3] — 2026-05-25
+
+### Added
+
+- **Webhook ownership** — webhooks are now bound to the API key that created them via `owner_key_hash` (SHA-256 of the raw key, stored in SQLite). `GET /api/watches` and `DELETE /api/watch/{id}` are filtered to the caller's webhooks. Legacy webhooks created before this change (NULL `owner_key_hash`) remain accessible to all authenticated callers — no data migration needed.
+- **`GET /api/admin/watches`** — new admin endpoint that returns all webhooks regardless of ownership. Includes `owner_key_hash` for cross-referencing with the key list. Requires `X-Admin-Secret` header. Secrets are never included.
+- **`AdminWatchResponse` Pydantic model** — `watch_id`, `username`, `callback_url`, `owner_key_hash` — added to `api/models.py`.
+
+### Changed
+
+- **`register_webhook`** now accepts `owner_key=None` — the raw API key is hashed (SHA-256) and stored. Pass `None` when auth is disabled (anonymous / legacy registration).
+- **`unregister_webhook`** now accepts `owner_key=None` — returns `False` (→ 404) if the watch exists but belongs to a different key. Admin path passes `owner_key=None` to bypass the check.
+- **`list_webhooks`** now accepts `owner_key=None` — filters to matching hash + NULL legacy entries. `list_all_webhooks()` (new) returns all entries for the admin path.
+- **`watch`, `unwatch`, `watches` handlers** — now inject `_key: str | None = _auth` directly (no `dependencies=[_auth]`) so the key can be forwarded to ownership checks.
+- **SQLite `webhooks` table** — non-destructive `ALTER TABLE … ADD COLUMN owner_key_hash TEXT` migration runs on first startup. Existing rows get `NULL` (legacy, accessible to all).
+- **`GET /health` `active_webhooks`** — now counts via `list_all_webhooks()` so the total is always the true global count, not filtered by any key.
+- **`DELETE /api/watch/{id}` 404 description** — updated to say "not found or not owned by this key" to accurately reflect the dual-purpose 404.
+- **Version bump** — `app.version` → `0.4.3`.
+
+---
+
 ## [0.4.2] — 2026-05-25
 
 ### Added

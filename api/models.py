@@ -33,6 +33,13 @@ class WatchResponse(BaseModel):
     callback_url: str
 
 
+class AdminWatchResponse(BaseModel):
+    watch_id: str
+    username: str
+    callback_url: str
+    owner_key_hash: str | None = None
+
+
 class KeyResponse(BaseModel):
     id: str
     key: str

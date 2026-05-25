@@ -23,7 +23,10 @@ Five complementary endpoints:
       Unregister a previously registered webhook.
 
   GET /api/watches
-      List all active webhooks (watch_id, username, callback_url).
+      List webhooks owned by the calling key (+ legacy NULL-owner webhooks).
+
+  GET /api/admin/watches
+      List ALL webhooks with owner_key_hash. Requires X-Admin-Secret header.
 
   GET /api/watch/{watch_id}/deliveries
       Last 20 delivery records for a webhook (timestamp, http_status,
@@ -88,6 +91,7 @@ from .keys import (
 )
 from .models import (
     AdminKeyResponse,
+    AdminWatchResponse,
     DeliveryRecord,
     ErrorResponse,
     HealthResponse,
@@ -100,6 +104,7 @@ from .webhooks import (
     register_webhook,
     unregister_webhook,
     list_webhooks,
+    list_all_webhooks,
     get_delivery_history,
     restore_webhooks,
     shutdown_webhooks,
@@ -222,7 +227,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="NotiTFK",
     description=__doc__,
-    version="0.4.2",
+    version="0.4.3",
     lifespan=lifespan,
 )
 
@@ -286,7 +291,7 @@ async def health() -> HealthResponse:
         auth_enabled=AUTH_ENABLED,
         cache_ttl_seconds=CACHE_TTL,
         poll_interval_seconds=POLL_INTERVAL,
-        active_webhooks=len(list_webhooks()),
+        active_webhooks=len(list_all_webhooks()),
         active_sse_connections=sum(_sse_connections.values()),
         db_ok=await asyncio.to_thread(_db_ok),
     )
@@ -577,9 +582,8 @@ async def admin_revoke_key(key_id: str):
     },
     summary="Register a webhook for live status changes",
     tags=["Webhooks"],
-    dependencies=[_auth],
 )
-async def watch(body: WatchRequest):
+async def watch(body: WatchRequest, _key: str | None = _auth):
     """
     Register a callback URL POSTed whenever *username* goes live or offline.
 
@@ -591,10 +595,14 @@ async def watch(body: WatchRequest):
     Pass `secret` to enable HMAC-SHA256 signing (`X-NotiTFK-Signature: sha256=<hex>`).
 
     Returns a `watch_id` — keep it to unregister later with `DELETE /api/watch/{watch_id}`.
+    Webhooks are bound to the creating key: only that key can list or delete them.
+    Legacy webhooks (created without a key) remain accessible to all authenticated callers.
     """
     _validate_username(body.username)
     try:
-        watch_id = await register_webhook(body.username, str(body.callback_url), body.secret)
+        watch_id = await register_webhook(
+            body.username, str(body.callback_url), body.secret, owner_key=_key
+        )
     except WebhookURLError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except WebhookLimitExceeded as e:
@@ -609,16 +617,20 @@ async def watch(body: WatchRequest):
     status_code=204,
     responses={
         401: {"description": "Missing or invalid API key"},
-        404: {"description": "Watch ID not found"},
+        404: {"description": "Watch ID not found or not owned by this key"},
         429: {"description": "Rate limit exceeded"},
     },
     summary="Unregister a webhook",
     tags=["Webhooks"],
-    dependencies=[_auth],
 )
-async def unwatch(watch_id: str):
-    """Remove the webhook registered under *watch_id*."""
-    removed = await unregister_webhook(watch_id)
+async def unwatch(watch_id: str, _key: str | None = _auth):
+    """
+    Remove the webhook registered under *watch_id*.
+
+    Returns 404 if the watch_id does not exist **or** belongs to a different key.
+    This prevents callers from enumerating other users' webhooks by probing for 403.
+    """
+    removed = await unregister_webhook(watch_id, owner_key=_key)
     if not removed:
         raise HTTPException(status_code=404, detail=f"watch_id '{watch_id}' not found.")
 
@@ -628,13 +640,42 @@ async def unwatch(watch_id: str):
     response_model=list[WatchResponse],
     summary="List active webhooks",
     tags=["Webhooks"],
-    dependencies=[_auth],
 )
-async def watches():
-    """Return all currently registered webhooks. Secrets are never included."""
+async def watches(_key: str | None = _auth):
+    """
+    Return webhooks owned by the current key.
+
+    Includes legacy webhooks (created before key-based ownership was introduced).
+    Secrets are never included in any response.
+    """
     return [
         WatchResponse(watch_id=w.watch_id, username=w.username, callback_url=w.callback_url)
-        for w in list_webhooks()
+        for w in list_webhooks(owner_key=_key)
+    ]
+
+
+@app.get(
+    "/api/admin/watches",
+    response_model=list[AdminWatchResponse],
+    summary="List all webhooks (admin)",
+    tags=["Admin"],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_watches():
+    """
+    Return all registered webhooks regardless of ownership.
+
+    Includes `owner_key_hash` so admins can cross-reference with their key list.
+    Secrets are never included.
+    """
+    return [
+        AdminWatchResponse(
+            watch_id=w.watch_id,
+            username=w.username,
+            callback_url=w.callback_url,
+            owner_key_hash=w.owner_key_hash,
+        )
+        for w in list_all_webhooks()
     ]
 
 
