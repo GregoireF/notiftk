@@ -1,6 +1,6 @@
 [project]
 name = "notiftk"
-version = "0.4.3"
+version = "0.4.4"
 description = "Real-time TikTok live status API — REST, SSE, webhooks"
 readme = "README.md"
 requires-python = ">=3.11"

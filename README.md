@@ -365,13 +365,20 @@ Liveness check — ne touche pas TikTok.
 ```json
 {
   "status": "ok",
-  "version": "0.4.0",
-  "auth_enabled": false,
+  "version": "0.4.3",
+  "timestamp": 1748370000.0,
+  "uptime_seconds": 3642.1,
+  "auth_enabled": true,
   "cache_ttl_seconds": 30,
   "poll_interval_seconds": 5,
-  "active_webhooks": 3
+  "active_webhooks": 3,
+  "active_sse_connections": 12,
+  "db_ok": true
 }
 ```
+
+- `timestamp` — heure de la mesure (Unix float). Permet de détecter un proxy qui cache la réponse.
+- `active_sse_connections` — connexions SSE ouvertes toutes clés confondues.
 
 ---
 
@@ -427,6 +434,7 @@ data: {"username":"pokimane","is_live":false,...}
 
 ### `POST /api/watch`
 Enregistre un webhook. NotiTFK postera à l'URL donnée à chaque changement `is_live`.
+Le webhook est lié à la clé API utilisée à la création (ownership isolé par clé).
 
 **Corps :**
 ```json
@@ -447,18 +455,74 @@ Enregistre un webhook. NotiTFK postera à l'URL donnée à chaque changement `is
 ---
 
 ### `DELETE /api/watch/{watch_id}`
-Supprime le webhook. Réponse 204 si trouvé, 404 sinon.
+Supprime le webhook. Réponse `204` si trouvé **et** possédé par la clé appelante, `404` sinon.
+Le 404 couvre à la fois "introuvable" et "appartient à une autre clé" — pas de 403 qui enumèrerait.
 
 ---
 
 ### `GET /api/watches`
-Liste tous les webhooks actifs. Les secrets ne sont jamais exposés.
+Liste les webhooks actifs **appartenant à la clé appelante** (+ les webhooks legacy sans propriétaire).
+Les secrets ne sont jamais exposés.
 
 ```json
 [
   { "watch_id": "uuid", "username": "ninja", "callback_url": "https://..." }
 ]
 ```
+
+---
+
+### `GET /api/watch/{watch_id}/deliveries`
+Retourne les **20 dernières tentatives de livraison** pour un webhook, les plus récentes en premier.
+L'historique est en mémoire uniquement — il se réinitialise au redémarrage ou à la suppression du webhook.
+
+```json
+[
+  {
+    "timestamp": 1748370000.0,
+    "http_status": 200,
+    "attempt_count": 1,
+    "success": true
+  },
+  {
+    "timestamp": 1748369400.0,
+    "http_status": 503,
+    "attempt_count": 3,
+    "success": false
+  }
+]
+```
+
+- `http_status` — code HTTP retourné par le receiver, `null` en cas d'erreur réseau.
+- `attempt_count` — 1 à 3 (compte les retries ; 3 = tous les essais épuisés).
+
+| Code | Cas |
+|------|-----|
+| `200` | Historique retourné (peut être vide si aucune livraison) |
+| `404` | watch_id inconnu |
+
+---
+
+### `GET /api/admin/watches` *(admin)*
+Liste **tous** les webhooks actifs, quelle que soit la clé propriétaire.
+Inclut `owner_key_hash` pour croiser avec la liste des clés. Nécessite le header `X-Admin-Secret`.
+
+```bash
+curl -H "X-Admin-Secret: votre-secret" https://notiftk.fly.dev/api/admin/watches
+```
+
+```json
+[
+  {
+    "watch_id": "uuid",
+    "username": "ninja",
+    "callback_url": "https://...",
+    "owner_key_hash": "a3f2c1..."
+  }
+]
+```
+
+> Si `ADMIN_SECRET` n'est pas configuré, l'endpoint retourne **404**.
 
 ---
 
@@ -607,6 +671,7 @@ Sans `API_KEYS`, l'auth est désactivée. Le **rate limiting par IP est toujours
 | `SSE_MAX_PER_USERNAME` | `50` | Max connexions SSE simultanées sur un même username |
 | `LOG_FORMAT` | `text` | Format des logs : `text` (humain) ou `json` (structuré pour Loki/journald) |
 | `LOG_LEVEL` | `INFO` | Niveau de log : `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `CORS_ORIGINS` | `*` | Origines CORS autorisées (séparées par des virgules) |
 
 ---
 
@@ -708,11 +773,17 @@ Koyeb offre 1 service toujours actif (0,1 vCPU, 512 MB) sans carte bancaire, mai
 # Variables d'env : API_KEYS, ADMIN_SECRET, REQUIRE_API_KEY
 ```
 
-### Option 3 — Oracle Cloud Always Free
+### Option 3 — Render (avec limitations)
 
-2 VMs ARM 4 cœurs / 24 GB RAM au total avec stockage persistant, sans carte bancaire. Setup plus complexe mais infrastructure dédiée.
+Render offre un service web gratuit avec **spin-down après 15 min d'inactivité** — les connexions SSE longues sont donc coupées. Pas de volume persistant en tier gratuit. À utiliser uniquement pour un usage ponctuel ou des tests.
 
-Voir le guide complet → [docs/wiki/deployment/alternatives.md](docs/wiki/deployment/alternatives.md)
+```bash
+# Déployer depuis GitHub via l'UI Render
+# https://dashboard.render.com → New Web Service → GitHub
+# Build command : pip install -r requirements.txt
+# Start command : uvicorn api.main:app --host 0.0.0.0 --port $PORT
+# Variables d'env : API_KEYS, ADMIN_SECRET, REQUIRE_API_KEY
+```
 
 ### Comparatif
 
@@ -745,9 +816,13 @@ Les tests couvrent :
 - Webhooks (registration, SSRF, limits, persistence SQLite, dispatch HMAC, poll loop)
 - Clés API self-service (génération, hachage, limites par IP, révocation)
 
-**Pipeline CI** (`.github/workflows/ci.yml`) : `lint → test → deploy` sur `main`.
+**Pipeline CI** (`.github/workflows/ci.yml`) : `commitlint → lint → typecheck → audit → test → deploy` sur `main`. Le deploy ne se lance que sur push direct (pas sur PR).
 
-**Dependabot** (`.github/dependabot.yml`) : PR automatique chaque lundi pour `TikTokLive` et les Actions GitHub. Auto-merge activé pour les mises à jour mineures et de patch.
+**Tests d'intégration hebdomadaires** (`.github/workflows/integration.yml`) : `pytest -m integration` chaque lundi à 08h UTC — détecte les cassures de l'API TikTok avant qu'elles atteignent les utilisateurs. Déclenchable manuellement.
+
+**Release automatique** (`.github/workflows/release.yml`) : un GitHub Release est créé automatiquement quand un tag `v*` est poussé. Workflow : bump version dans `pyproject.toml` → commit → `git tag v0.x.y && git push --tags`.
+
+**Dependabot** (`.github/dependabot.yml`) : PR automatique chaque lundi pour les dépendances pip et les Actions GitHub.
 
 **Pre-commit hooks** (ruff à chaque commit) :
 ```bash
@@ -761,7 +836,7 @@ make hooks   # à lancer une fois après le clone
 ```bash
 # 1. Cloner et installer
 git clone <repo-url> && cd notiftk
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # ou : pip install -e ".[dev]"
 make hooks          # pre-commit hooks
 
 # 2. Travailler
@@ -778,21 +853,17 @@ make test-all
 **Structure du projet :**
 ```
 api/
-  main.py      — endpoints FastAPI, générateurs SSE
-  tiktok.py    — détection live (TikTokLive wrapper + cache)
-  webhooks.py  — poll loop background, dispatch HMAC, SQLite
+  main.py      — endpoints FastAPI, générateurs SSE, SSE cap, JSON logging
+  tiktok.py    — détection live (TikTokLive wrapper + cache + thundering-herd lock)
+  webhooks.py  — poll loop, dispatch HMAC, retry, historique, ownership, SQLite
   auth.py      — API keys, rate limiting sliding-window
-  keys.py      — gestion clés self-service (génération, hachage SHA-256, limites par IP)
+  keys.py      — clés self-service : génération, SHA-256, expiration, invite code
   models.py    — modèles Pydantic partagés
 frontend/
   index.html   — UI de test (SSE, génération de clé self-service)
 infra/flyio/   — stack OpenTofu : app Fly.io
 tests/
-  conftest.py        — fixture async clean_webhooks (autouse)
-  test_tiktok.py     — unité : cache, détection, erreurs
-  test_api.py        — HTTP : REST, SSE, webhooks endpoints
-  test_webhooks.py   — unité : SSRF, limits, persistence, dispatch
-  test_auth.py       — unité : rate limiting, auth
+  test_tiktok.py  — unité : cache, détection, erreurs TikTok
 ```
 
 **Infrastructure as Code (`infra/flyio/`) :**
@@ -881,9 +952,10 @@ Stage 3 — SaaS (20 €+/mois)
 - [x] **Non-blocking SQLite** — toutes les lectures DB en auth wrappées dans `asyncio.to_thread`. L'event loop n'est plus bloqué sur les I/O disque.
 - [x] **Thundering herd fix** — verrou asyncio par username : 1 seul appel TikTok quand N clients trouvent le cache expiré simultanément.
 - [x] **Webhook retry avec backoff** — 3 tentatives (0 s, 1 s, 2 s) par delivery. Un receiver brièvement down ne perd plus l'événement.
+- [x] **Connection limit par clé** — `SSE_MAX_PER_KEY` (défaut 20) et `SSE_MAX_PER_USERNAME` (défaut 50). HTTP 429 si dépassé. Compteurs décrémentés en `try/finally` — un déconnect libère toujours le slot.
+- [x] **Historique de livraison webhook** — `GET /api/watch/{id}/deliveries` : 20 dernières livraisons avec timestamp, statut HTTP, nb de tentatives, succès/échec. Ring buffer en mémoire.
+- [x] **Ownership webhook par clé** — webhooks liés à la clé créatrice (SHA-256 stocké). `GET /api/watches` filtre par clé, `DELETE` retourne 404 si mauvaise clé (pas de 403). `GET /api/admin/watches` voit tout.
 - [ ] **Métriques Prometheus** — endpoint `/metrics` : nb requêtes, taux d'erreur, cache hit rate, latence TikTok, connexions SSE actives.
-- [ ] **Connection limit par clé** — cap sur le nombre de connexions SSE simultanées par clé (protection contre l'épuisement de ressources).
-- [ ] **Historique de livraison webhook** — `GET /api/watch/{id}/deliveries` : dernières N livraisons avec statut HTTP, timestamp, nb de tentatives.
 - [ ] **Redis cache** — partage du cache entre instances pour le Stage 2 multi-instances.
 
 ### Axes produit

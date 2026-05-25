@@ -1,0 +1,40 @@
+name: Integration tests
+
+# Runs weekly to detect TikTok API breakage early.
+# Also triggerable manually from GitHub Actions UI.
+#
+# Why weekly and not nightly?
+# TikTok API changes are rare and tied to TikTokLive releases.
+# Dependabot already opens a PR every Monday if a new version is out.
+# A daily job would consume Actions minutes for near-zero marginal signal.
+#
+# Why not a canary deploy?
+# We don't have staging infrastructure. The value here is detecting
+# breakage, not validating a deployment pipeline.
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"   # Every Monday at 08:00 UTC — same day as Dependabot
+  workflow_dispatch:       # Manual trigger from the Actions UI
+
+jobs:
+  integration:
+    name: TikTok connectivity (real API)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run integration tests
+        run: pytest tests/ -m integration -v
+        # Failure here means TikTok's API changed and TikTokLive needs an update.
+        # Check https://github.com/isaackogan/TikTokLive for a new release.

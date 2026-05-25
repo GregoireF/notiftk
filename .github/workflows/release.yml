@@ -1,0 +1,38 @@
+name: Release
+
+# Creates a GitHub Release automatically when a version tag is pushed.
+#
+# Workflow:
+#   1. Bump version in pyproject.toml (single source of truth)
+#   2. Commit: "chore(release): v0.x.y"
+#   3. git tag v0.x.y && git push --tags
+#   → This workflow fires, creates the Release with auto-generated notes.
+#
+# Why not auto-bump on merge to main?
+# Version bumps are intentional decisions. Auto-bumping on every merge
+# would produce meaningless patch versions for every doc fix or CI tweak.
+# A manual tag is the right signal: "this set of changes is a release."
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          make_latest: true

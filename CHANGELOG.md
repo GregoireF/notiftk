@@ -5,6 +5,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ---
 
+## [0.4.4] — 2026-05-25
+
+### Added
+
+- **Weekly integration test** — `.github/workflows/integration.yml` runs `pytest -m integration` every Monday at 08:00 UTC (same day as Dependabot) and on manual trigger. Detects TikTok API breakage before it reaches users. Canary deploys were considered but ruled out: no staging infrastructure exists and deployment risk is low relative to the overhead.
+- **Release workflow** — `.github/workflows/release.yml` creates a GitHub Release automatically when a `v*` tag is pushed. Trigger: bump `pyproject.toml` version → commit → `git tag vX.Y.Z && git push --tags`.
+- **`Commitlint` CI job** — `wagoid/commitlint-github-action@v6` now runs on every PR/push so the GitHub required-check actually executes. Previously `.commitlintrc.yml` was configured but no CI job ran it, forcing every merge to bypass the check.
+
+### Changed
+
+- **Version source of truth** — `api/main.py` reads the version from `pyproject.toml` via `importlib.metadata` (when installed) or `tomllib` fallback (git-clone / dev). No more manual sync between `pyproject.toml` and `FastAPI(version=...)`.
+- **Dockerfile** — now runs `pip install --no-deps .` after copying source so `importlib.metadata.version("notiftk")` resolves inside the container. Dependency layer is still cached from `requirements.txt`. Added `org.opencontainers.image.source` label.
+- **`actions/setup-python`** — downgraded from non-existent `@v6` to `@v5` across all CI jobs.
+- **Deploy `needs`** — deploy job now also waits for `commitlint` in addition to `test`, `typecheck`, `audit`.
+- **README** — updated health response example (version, timestamp, active_sse_connections, uptime_seconds, db_ok), added `GET /api/watch/{id}/deliveries` and `GET /api/admin/watches` sections, fixed `GET /api/watches` description (now ownership-filtered), fixed `DELETE` 404 semantics, updated env-var table (added CORS_ORIGINS), replaced duplicate "Option 3 Oracle" with Render documentation, checked off completed roadmap items (SSE cap, delivery history, webhook ownership), updated project structure.
+- **pyproject.toml / `pyproject.toml` packaging** — declared as the authoritative version source. Considered full PyPI packaging (`pip install notiftk` → `notiftk serve`) but ruled out: this is a self-hosted server, not a library. Docker/git clone are the correct deployment paths.
+- **Monorepo** — considered and rejected. The frontend is a single static HTML file served by FastAPI with no separate build step. Monorepo tooling (Turborepo, Nx) is for projects with multiple independently-buildable artifacts.
+- **Version bump** — `pyproject.toml` + `app.version` → `0.4.4`.
+
+---
+
 ## [0.4.3] — 2026-05-25
 
 ### Added
