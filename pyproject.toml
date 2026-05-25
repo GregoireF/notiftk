@@ -5,7 +5,7 @@ description = "Real-time TikTok live status API — REST, SSE, webhooks"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi==0.136.1",
+    "fastapi==0.136.3",
     "uvicorn[standard]==0.47.0",
     "pydantic==2.13.4",
     "TikTokLive==6.6.5",
